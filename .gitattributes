@@ -1,0 +1,28 @@
+# .gitattributes
+# 强制所有文本文件使用 LF（Linux 格式）
+* text=auto eol=lf
+
+# 指定特定文件类型
+*.js text eol=lf
+*.ts text eol=lf
+*.json text eol=lf
+*.vue text eol=lf
+*.css text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# 脚本文件（必须使用 LF）
+*.sh text eol=lf
+*.bash text eol=lf
+
+# Windows 批处理文件（必须使用 CRLF）
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制文件（不要转换）
+*.png binary
+*.jpg binary
+*.ico binary
+*.pdf binary
+*.zip binary

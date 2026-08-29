@@ -1,0 +1,810 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "./generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+//流水号表
+model Sequence {
+  id           Int      @id @default(autoincrement())
+  key          String   @unique //序列键
+  currentValue Int      @default(0) @map("current_value") //当前最新流水号
+  description  String? //描述
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("sequences")
+}
+
+//用户模型
+model User {
+  id                    String             @id @default(uuid()) //内部调用主键
+  badgeCode             String             @unique @map("badge_code") //工号（唯一业务标识）
+  name                  String //姓名
+  password              String // bcrypt hash
+  phone                 String?            @unique
+  email                 String?            @unique
+  role                  String? //角色，决定基础权限
+  department            String? // 部门
+  permissions           String[] // 存储权限标识数组
+  status                Status             @default(ACTIVE)
+  salt                  String? // 可选，用于其他数据加密
+  createdAt             DateTime           @default(now())
+  updatedAt             DateTime           @updatedAt
+  lastLoginAt           DateTime?
+  productionLogs        ProductionLog[]
+  inventoryLogs         InventoryLog[]
+  orders                Order[]
+  createdBoms           Bom[]              @relation("BomCreator") // 对应 Bom.creator
+  approvedBoms          Bom[]              @relation("BomApprover")
+  orderReceipts         OrderReceipt[]
+  productLogs           ProductLog[]
+  auditLogs             AuditLog[]
+  orderProcessPlans     OrderProcessPlan[]
+  orderMiscCosts        OrderMiscCost[]
+  createdPurchaseOrders PurchaseOrder[]    @relation("PurchaseCreator")
+  approvedPurchaseOrder PurchaseOrder[]    @relation("PurchaseApprover")
+  purchaseReceipts      PurchaseReceipt[]
+
+  @@index([badgeCode])
+  @@index([email])
+  @@index([phone])
+  @@map("users")
+}
+
+enum Status {
+  ACTIVE
+  INACTIVE
+}
+
+// 订单模型
+model Order {
+  id                String             @id @default(uuid())
+  orderCode         String             @unique // 订单编号，sequence 生成
+  customerId        String?
+  customer          Customer?          @relation(fields: [customerId], references: [id])
+  orderType         OrderType          @default(STANDARD)
+  status            OrderStatus        @default(PENDING)
+  totalAmount       Decimal            @default(0) @db.Decimal(12, 2) // 金额用 Decimal 防精度丢失
+  createdById       String // 制单人
+  creator           User               @relation(fields: [createdById], references: [id])
+  receipts          OrderReceipt[] // 关联入库记录
+  department        String? // 所属部门，行级权限用
+  items             OrderItem[]
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+  deadlineAt        DateTime?
+  boms              Bom[]
+  orderReservation  OrderReservation[] // 订单预留逆向关联
+  orderProcessPlans OrderProcessPlan[]
+  productionLogs    ProductionLog[]
+  orderMiscCosts    OrderMiscCost[]
+
+  @@index([orderCode])
+  @@index([customerId])
+  @@index([createdById])
+  @@map("orders")
+}
+
+enum OrderType {
+  STANDARD
+  VARIANT
+  CUSTOM
+}
+
+enum OrderStatus {
+  PENDING
+  APPROVED
+  READY
+  SAMPLING
+  SAMPLED
+  PRODUCING
+  COMPLETED
+  CANCELLED
+}
+
+//订单明细表
+model OrderItem {
+  id                String  @id @default(uuid())
+  orderId           String
+  order             Order   @relation(fields: [orderId], references: [id])
+  productId         String
+  product           Product @relation(fields: [productId], references: [id])
+  productName       String
+  fulfilledQuantity Decimal @default(0) @db.Decimal(12, 4) // 已满足数量（完工且已入库,来源：预留/生产入库/调配）
+  shippedQuantity   Decimal @default(0) @db.Decimal(12, 4) // 已出库数量
+  producedQty       Decimal @default(0) @db.Decimal(12, 4) // 已完工数量 (完工但未入库,来源:报工)
+  quantity          Decimal @db.Decimal(12, 4) //需求数量
+  unitPrice         Decimal @db.Decimal(12, 2) //单价
+  bomId             String? // 审批锁定的 BOM ID
+  bomVersion        Int? // 审批锁定的 BOM 版本
+
+  receipts          OrderReceipt[]
+  orderProcessPlans OrderProcessPlan[]
+
+  @@index([orderId]) // 查订单明细
+  @@index([productId]) // 查某个产品被哪些订单用过
+  @@map("order_items")
+}
+
+//订单预留表,用于记录相关预留操作及用于逆向还原
+model OrderReservation {
+  id          String          @id @default(uuid())
+  orderId     String
+  order       Order           @relation(fields: [orderId], references: [id])
+  orderItemId String? // 关联订单明细（成品预留时有值）
+  productId   String // 被预留的产品ID（可能是成品或物料）
+  type        ReservationType
+  quantity    Decimal         @db.Decimal(12, 4) // 预留数量（正数）
+  consumedQty Decimal         @default(0) @db.Decimal(12, 4) // 已消耗数量（来源：生产入库,用于计算在制品数量,公式为released-consumedQty）
+  released    Decimal         @default(0) @db.Decimal(12, 4) // 已释放数量（部分取消时递增）
+  createdAt   DateTime        @default(now())
+
+  @@index([orderId])
+  @@index([productId])
+  @@index([createdAt])
+  @@map("order_reservations")
+}
+
+enum ReservationType {
+  PRODUCT_RESERVE // 成品库存预留
+  MATERIAL_RESERVE // 物料预留
+  ALLOCATE // 调配
+}
+
+// 库存表（用于锁定、事务）
+model Inventory {
+  id           String   @id @default(uuid())
+  productId    String   @unique
+  product      Product  @relation(fields: [productId], references: [id])
+  productName  String
+  quantity     Decimal  @default(0) @db.Decimal(12, 4) // 当前库存数量
+  reservedQty  Decimal  @default(0) @db.Decimal(12, 4) // 已预留数量（审批通过但未出库）
+  allocatedQty Decimal  @default(0) @db.Decimal(12, 4) // 已调配数量
+  lockVersion  Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@map("inventories")
+}
+
+//库存流水日志
+model InventoryLog {
+  id          String         @id @default(uuid())
+  productId   String
+  product     Product        @relation(fields: [productId], references: [id])
+  type        LogRelatedType // 合并后唯一类型字段
+  quantity    Decimal        @db.Decimal(12, 4) // 变动量（正=入库，负=出库，红冲时由调用方决定）
+  beforeQty   Decimal        @db.Decimal(12, 4)
+  afterQty    Decimal        @db.Decimal(12, 4)
+  relatedCode String? // 关联业务单号
+  remark      String?
+  operatorId  String
+  locationId  String? // 新增：可选库位
+  location    Location?      @relation(fields: [locationId], references: [id])
+  operator    User           @relation(fields: [operatorId], references: [id])
+  createdAt   DateTime       @default(now())
+
+  @@index([productId])
+  @@index([createdAt])
+  @@index([relatedCode])
+  @@map("inventory_logs")
+}
+
+enum LogRelatedType {
+  INIT // 初始化
+  PURCHASE_IN // 采购入库
+  PRODUCTION_IN // 生产入库
+  RETURN_IN // 退货入库
+  TRANSFER_IN // 调拨入库
+  CHECK_IN // 盘盈入库
+  SALES_OUT // 销售出库
+  PRODUCTION_OUT // 生产领料
+  SAMPLE_OUT // 打样领料
+  SCRAP_OUT // 报废出库
+  TRANSFER_OUT // 调拨出库
+  CHECK_OUT // 盘亏出库
+  REVERSAL // 红冲
+  OTHER // 其他
+  ALLOCATE // 调配给订单
+  DEALLOCATE // 撤回调配
+}
+
+//bom表
+model Bom {
+  id           String    @id @default(uuid())
+  bomCode      String
+  productId    String
+  product      Product   @relation("BomProduct", fields: [productId], references: [id])
+  version      Int       @default(1)
+  status       BomStatus @default(DRAFT)
+  bomType      BomType   @default(PRODUCTION) // 新增
+  orderId      String? // 新增：定制 BOM 关联的订单
+  order        Order?    @relation(fields: [orderId], references: [id]) // 新增
+  createdById  String
+  creator      User      @relation("BomCreator", fields: [createdById], references: [id])
+  items        BomItem[]
+  approvedById String?
+  approver     User?     @relation("BomApprover", fields: [approvedById], references: [id])
+  approvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([bomCode, version])
+  @@map("boms")
+}
+
+enum BomType {
+  PRODUCTION // 标准生产
+  SAMPLE // 打样临时
+  CUSTOM // 定制品专用
+}
+
+//bom子表
+model BomItem {
+  id           String  @id @default(uuid())
+  bomId        String
+  bom          Bom     @relation(fields: [bomId], references: [id], onDelete: Cascade)
+  materialId   String // 子物料 SKU
+  material     Product @relation("BomMaterial", fields: [materialId], references: [id])
+  materialName String // 冗余
+  quantity     Decimal @db.Decimal(12, 4)
+  unit         String  @default("PCS")
+  scrapRate    Decimal @default(0) @db.Decimal(5, 4)
+
+  @@index([bomId]) // 查 BOM 的子物料清单
+  @@index([materialId])
+  @@map("bom_items")
+}
+
+enum BomStatus {
+  DRAFT
+  PUBLISHED
+  OBSOLETED
+}
+
+//客户表
+model Customer {
+  id        String         @id @default(uuid())
+  code      String         @unique
+  name      String
+  contact   String?
+  phone     String?
+  email     String?
+  address   String?
+  remark    String?
+  status    CustomerStatus @default(ACTIVE)
+  orders    Order[]
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@map("customers")
+}
+
+enum CustomerStatus {
+  ACTIVE
+  INACTIVE
+}
+
+//产品表
+model Product {
+  id                      String                   @id @default(uuid())
+  code                    String                   @unique // 产品编码，sequence 生成
+  name                    String
+  spec                    String?
+  unit                    ProductUnit              @default(PCS)
+  packUnit                String? // 包装规格,如：12个/箱,单位只存枚举值,该值仅作为辅助
+  category                ProductCategory?
+  tags                    String[]                 @default([])
+  attributes              Json?
+  status                  ProductStatus            @default(ACTIVE)
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  inventories             Inventory[]
+  bomProducts             Bom[]                    @relation("BomProduct")
+  bomMaterials            BomItem[]                @relation("BomMaterial")
+  orderItems              OrderItem[]
+  productionLogs          ProductionLog[]
+  productProcessTemplates ProductProcessTemplate[]
+  orderProcessPlans       OrderProcessPlan[]
+  productLogs             ProductLog[]
+  inventoryLogs           InventoryLog[]
+  inventoryLocations      InventoryLocation[]
+  purchaseOrderItems      PurchaseOrderItem[]
+
+  @@map("products")
+}
+
+enum ProductCategory {
+  FINISHED // 成品
+  SEMI // 半成品
+  RAW // 原材料
+  PACKAGING // 包材
+}
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum ProductUnit {
+  // ── 计数类 ──
+  PCS // 个 / 件 / 只 / 台
+  PAIR // 双 / 对
+  SET // 套 / 组
+
+  // ── 重量类 ──
+  T // 吨
+  KG // 千克 / 公斤
+  G // 克
+  MG // 毫克
+
+  // ── 长度类 ──
+  KM // 千米
+  M // 米
+  CM // 厘米
+  MM // 毫米
+
+  // ── 面积类 ──
+  M2 // 平方米
+  CM2 // 平方厘米
+
+  // ── 体积 / 容积类 ──
+  M3 // 立方米
+  L // 升
+  ML // 毫升
+
+  // ── 包装类（非精确计量，用于辅助显示）──
+  ROLL // 卷
+  BAG // 包 / 袋
+  BOX // 箱
+  CARTON // 纸箱 / 大箱
+  BOTTLE // 瓶
+}
+
+// 订单入库记录表（生产入库/分批入库）
+model OrderReceipt {
+  id          String    @id @default(uuid())
+  receiptCode String    @unique //业务单号，如 "RC-20250001"
+  orderId     String // 关联主订单
+  order       Order     @relation(fields: [orderId], references: [id])
+  orderItemId String // 关联订单明细（具体到哪个产品）
+  orderItem   OrderItem @relation(fields: [orderItemId], references: [id])
+
+  locationId String? // 入库库位
+  location   Location? @relation(fields: [locationId], references: [id])
+
+  productId String // 冗余产品ID，方便独立查询
+  quantity  Decimal @db.Decimal(12, 4) // 本次入库数量（必须 > 0）
+
+  operatorId String? // 操作人
+  operator   User?    @relation(fields: [operatorId], references: [id])
+  remark     String? // 备注（如：第一批交货、次品降级入库等）
+  createdAt  DateTime @default(now())
+
+  @@index([orderId])
+  @@index([orderItemId])
+  @@index([createdAt])
+  @@map("order_receipts")
+}
+
+//产品变更日志
+model ProductLog {
+  id         String   @id @default(uuid())
+  productId  String
+  product    Product  @relation(fields: [productId], references: [id])
+  field      String // 变更字段名
+  oldValue   String? // 旧值
+  newValue   String? // 新值
+  operatorId String // 操作人
+  operator   User?    @relation(fields: [operatorId], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@index([productId])
+  @@index([createdAt])
+  @@index([operatorId])
+  @@map("product_logs")
+}
+
+//操作审计追溯
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  entity     String // 实体类型：User/Product/Order/Bom/Inventory
+  entityId   String // 实体 ID
+  action     String // 操作：CREATE/UPDATE/DELETE/APPROVE/REJECT/...
+  field      String? // 变更字段（单字段变更时）
+  oldValue   String? // 旧值
+  newValue   String? // 新值
+  remark     String? // 备注
+  operatorId String // 操作人
+  operator   User     @relation(fields: [operatorId], references: [id])
+  createdAt  DateTime @default(now())
+
+  @@index([entity, entityId])
+  @@index([operatorId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+// 成本记录表（出入库统一）
+model InventoryCostEntry {
+  id             String         @id @default(uuid())
+  inventoryLogId String         @unique
+  productId      String
+  direction      CostDirection
+  quantity       Decimal        @db.Decimal(12, 4)
+  unitCost       Decimal        @db.Decimal(12, 4)
+  totalCost      Decimal        @db.Decimal(12, 4)
+  costType       CostType       @default(MATERIAL)
+  sourceType     CostSourceType
+  orderId        String?
+  remark         String?
+  createdAt      DateTime       @default(now())
+
+  @@index([productId])
+  @@index([orderId])
+  @@index([createdAt])
+  @@map("inventory_cost_entries")
+}
+
+// 订单成本汇总
+model OrderCostSummary {
+  id           String   @id @default(uuid())
+  orderId      String   @unique
+  totalAmount  Decimal  @db.Decimal(12, 2)
+  materialCost Decimal  @db.Decimal(12, 2)
+  laborCost    Decimal  @default(0) @db.Decimal(12, 2)
+  overheadCost Decimal  @default(0) @db.Decimal(12, 2)
+  grossProfit  Decimal  @db.Decimal(12, 2)
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@map("order_cost_summaries")
+}
+
+// 枚举
+enum CostDirection {
+  IN
+  OUT
+}
+
+enum CostType {
+  MATERIAL
+  LABOR
+  OVERHEAD
+}
+
+enum CostSourceType {
+  PURCHASE
+  PRODUCTION
+  ESTIMATE
+  ADJUSTMENT
+}
+
+// 标准工序表
+model Process {
+  id                      String                   @id @default(uuid())
+  name                    String // 工序名称：裁剪、车缝、组装、检验等
+  description             String?
+  createdAt               DateTime                 @default(now())
+  updatedAt               DateTime                 @updatedAt
+  orderProcessPlans       OrderProcessPlan[]
+  productionLogs          ProductionLog[]
+  productProcessTemplates ProductProcessTemplate[]
+
+  @@map("processes")
+}
+
+// 产品工序模板（独立于订单）
+model ProductProcessTemplate {
+  id            String   @id @default(uuid())
+  productId     String
+  product       Product  @relation(fields: [productId], references: [id])
+  processId     String? // 关联标准工序（可选）
+  process       Process? @relation(fields: [processId], references: [id])
+  sequence      Int // 顺序号
+  processName   String // 工序名称快照
+  wageType      WageType @default(HOURLY)
+  standardHours Decimal? @db.Decimal(12, 4)
+  hourlyRate    Decimal? @db.Decimal(12, 4)
+  unitPrice     Decimal? @db.Decimal(12, 4)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([productId, sequence])
+  @@map("product_process_templates")
+}
+
+// 订单工序计划
+model OrderProcessPlan {
+  id             String          @id @default(uuid())
+  productId      String?
+  product        Product?        @relation(fields: [productId], references: [id])
+  orderId        String
+  order          Order           @relation(fields: [orderId], references: [id])
+  orderItemId    String
+  orderItem      OrderItem       @relation(fields: [orderItemId], references: [id])
+  processId      String? // 对应标准工序
+  process        Process?        @relation(fields: [processId], references: [id])
+  sequence       Int // 顺序号
+  processName    String // 工序名称快照
+  wageType       WageType        @default(HOURLY) // 计时/计件
+  standardHours  Decimal?        @db.Decimal(12, 4) // 标准工时（计时时使用）
+  hourlyRate     Decimal?        @db.Decimal(12, 4) // 工资率（计时时使用）
+  unitPrice      Decimal?        @db.Decimal(12, 4) // 计件单价（计件时使用）
+  assignedQty    Decimal         @db.Decimal(12, 4) // 计划生产数量
+  completedQty   Decimal         @default(0) @db.Decimal(12, 4) // 已完成数量
+  qualifiedQty   Decimal         @default(0) @db.Decimal(12, 4) // 合格数量
+  defectiveQty   Decimal         @default(0) @db.Decimal(12, 4) // 不良数量
+  status         PlanStatus      @default(PENDING)
+  operatorId     String? // 操作员ID(用户,而非员工)
+  operator       User?           @relation(fields: [operatorId], references: [id])
+  startTime      DateTime?
+  endTime        DateTime?
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  productionLogs ProductionLog[]
+
+  @@index([orderId])
+  @@index([orderItemId])
+  @@map("order_process_plans")
+}
+
+enum PlanStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+}
+
+enum WageType {
+  HOURLY
+  PIECE
+}
+
+// 报工记录
+model ProductionLog {
+  id            String           @id @default(uuid())
+  planId        String // 关联工序计划
+  plan          OrderProcessPlan @relation(fields: [planId], references: [id])
+  orderId       String
+  order         Order            @relation(fields: [orderId], references: [id])
+  productId     String
+  product       Product          @relation(fields: [productId], references: [id])
+  processId     String?
+  process       Process?         @relation(fields: [processId], references: [id])
+  processName   String // 工序名称快照
+  completedQty  Decimal          @db.Decimal(12, 4) // 本次报工完成数量
+  qualifiedQty  Decimal          @db.Decimal(12, 4) // 本次合格数量
+  defectiveQty  Decimal          @default(0) @db.Decimal(12, 4) // 本次不良数量
+  wageType      WageType         @default(HOURLY) // 计时/计件
+  laborHours    Decimal?         @db.Decimal(12, 4) // 实际工时（计时时使用）
+  hourlyRate    Decimal?         @db.Decimal(12, 4) // 工资率快照（计时时使用）
+  unitPrice     Decimal?         @db.Decimal(12, 4) // 计件单价（计件时使用）
+  laborCost     Decimal?         @db.Decimal(12, 4) // 人工成本
+  startTime     DateTime? //开始时间
+  endTime       DateTime? //结束时间  
+  operatorId    String // 录入人（系统用户）
+  operator      User             @relation(fields: [operatorId], references: [id])
+  workerId      String? // 操作工（实际干活的人）
+  worker        Worker?          @relation(fields: [workerId], references: [id])
+  remark        String?
+  isLatest      Boolean          @default(true) // 是否最新版本
+  revisedFromId String? // 修改来源记录ID
+  createdAt     DateTime         @default(now())
+
+  @@index([planId])
+  @@index([orderId])
+  @@index([workerId])
+  @@index([operatorId])
+  @@index([createdAt])
+  @@map("production_logs")
+}
+
+model OrderMiscCost {
+  id          String       @id @default(uuid())
+  orderId     String?      // 改为可选，支持不绑定订单
+  order       Order?       @relation(fields: [orderId], references: [id])
+  workerId    String?      // 可选，关联正式员工
+  worker      Worker?      @relation(fields: [workerId], references: [id])
+  workerName  String?      // 冗余员工姓名（临时工手填，不关联 Worker 时用）
+  costType    MiscCostType @default(OTHER)  // 费用类型
+  description String       // 费用说明
+  amount      Decimal      @db.Decimal(10, 2)  // 金额
+  remark      String?      // 备注
+  status      MiscCostStatus @default(ACTIVE)
+  operatorId  String       // 录入人
+  operator    User         @relation(fields: [operatorId], references: [id])
+  createdAt   DateTime     @default(now())
+
+  @@index([orderId])
+  @@index([workerId])
+  @@index([createdAt])
+  @@map("order_misc_costs")
+}
+enum MiscCostStatus {
+  ACTIVE     // 有效
+  VOIDED     // 已作废
+}
+enum MiscCostType {
+  TRANSPORT   // 运输
+  HANDLING    // 搬运
+  TEMP_LABOR  // 临时工
+  OUTSOURCE   // 外包
+  OTHER       // 其他
+}
+
+// 员工表
+model Worker {
+  id               String          @id @default(uuid())
+  code             String          @unique // 工号，唯一标识
+  name             String
+  phone            String?
+  idCard           String?
+  position         String? //职位
+  department       String? //部门
+  entryDate        DateTime?
+  emergencyContact String?
+  emergencyPhone   String?
+  hourlyRate       Decimal?        @db.Decimal(10, 2)
+  unitPrice        Decimal?        @db.Decimal(10, 2)
+  remark           String?
+  status           WorkerStatus    @default(ACTIVE)
+  productionLogs   ProductionLog[]
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  orderMiscCosts   OrderMiscCost[]
+
+  @@map("workers")
+}
+
+enum WorkerStatus {
+  ACTIVE
+  INACTIVE
+}
+
+//库位表
+model Location {
+  id               String              @id @default(uuid())
+  code             String              @unique
+  name             String
+  warehouse        String?
+  status           LocationStatus      @default(ACTIVE)
+  isDefault        Boolean             @default(false)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  inventories      InventoryLocation[]
+  inventoryLogs    InventoryLog[]
+  orderReceipts    OrderReceipt[]
+  purchaseReceipts PurchaseReceipt[]
+
+  @@map("locations")
+}
+
+enum LocationStatus {
+  ACTIVE
+  INACTIVE
+}
+
+//库位库存关联表
+model InventoryLocation {
+  id          String   @id @default(uuid())
+  productId   String
+  locationId  String
+  quantity    Decimal  @default(0) @db.Decimal(12, 4) // 该库位的产品数量
+  lockVersion Int      @default(0)
+  updatedAt   DateTime @updatedAt
+  createdAt   DateTime @default(now())
+  product     Product  @relation(fields: [productId], references: [id])
+  location    Location @relation(fields: [locationId], references: [id])
+
+  @@unique([productId, locationId])
+  @@index([productId])
+  @@index([locationId])
+  @@map("inventory_locations")
+}
+
+model Supplier {
+  id             String          @id @default(uuid())
+  code           String          @unique
+  name           String
+  contact        String?
+  phone          String?
+  email          String?
+  address        String?
+  remark         String?
+  status         SupplierStatus  @default(ACTIVE)
+  purchaseOrders PurchaseOrder[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  @@map("suppliers")
+}
+
+enum SupplierStatus {
+  ACTIVE
+  INACTIVE
+}
+
+model PurchaseOrder {
+  id           String              @id @default(uuid())
+  orderCode    String              @unique
+  supplierId   String
+  supplier     Supplier            @relation(fields: [supplierId], references: [id])
+  status       PurchaseOrderStatus @default(PENDING)
+  totalAmount  Decimal             @default(0) @db.Decimal(12, 2)
+  expectedDate DateTime?
+  createdById  String
+  creator      User                @relation("PurchaseCreator", fields: [createdById], references: [id])
+  approvedById String?
+  approver     User?               @relation("PurchaseApprover", fields: [approvedById], references: [id])
+  approvedAt   DateTime?
+  remark       String?
+  items        PurchaseOrderItem[]
+  receipts     PurchaseReceipt[]
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  @@index([supplierId])
+  @@index([status])
+  @@index([createdAt])
+  @@map("purchase_orders")
+}
+
+enum PurchaseOrderStatus {
+  PENDING
+  APPROVED
+  PARTIAL
+  COMPLETED
+  CANCELLED
+}
+
+model PurchaseOrderItem {
+  id          String            @id @default(uuid())
+  orderId     String
+  order       PurchaseOrder     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String
+  product     Product           @relation(fields: [productId], references: [id])
+  productName String
+  spec        String?
+  unit        String            @default("PCS")
+  quantity    Decimal           @db.Decimal(12, 4)
+  unitPrice   Decimal           @db.Decimal(12, 2)
+  receivedQty Decimal           @default(0) @db.Decimal(12, 4)
+  remark      String?
+  receipts    PurchaseReceipt[]
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("purchase_order_items")
+}
+
+model PurchaseReceipt {
+  id          String            @id @default(uuid())
+  receiptCode String            @unique
+  orderId     String
+  order       PurchaseOrder     @relation(fields: [orderId], references: [id])
+  orderItemId String
+  orderItem   PurchaseOrderItem @relation(fields: [orderItemId], references: [id])
+  productId   String
+  quantity    Decimal           @db.Decimal(12, 4)
+  unitCost    Decimal           @db.Decimal(12, 4)
+  locationId  String?
+  location    Location?         @relation(fields: [locationId], references: [id])
+  operatorId  String
+  operator    User              @relation(fields: [operatorId], references: [id])
+  remark      String?
+  createdAt   DateTime          @default(now())
+
+  @@index([orderId])
+  @@index([createdAt])
+  @@map("purchase_receipts")
+}

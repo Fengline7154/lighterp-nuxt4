@@ -1,0 +1,129 @@
+# ============ Nuxt 特定 ============
+# Nuxt 构建目录
+.nuxt/
+.nuxt-*
+.output/
+dist/
+node_modules/
+
+# Nuxt 生成的文件
+.swc/
+.vercel/
+.netlify/
+
+# Nuxt 缓存
+.cache/
+.parcel-cache/
+
+# ============ 依赖和包管理 ============
+node_modules/
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+bun.lockb
+
+# ============ 环境变量 ============
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+
+# ============ 日志 ============
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+logs/
+log/
+
+# ============ 编译产物 ============
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============ IDE 和编辑器 ============
+# VS Code
+.vscode/
+*.code-workspace
+.vscode-test/
+
+# IntelliJ IDEA / WebStorm
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+
+# ============ 操作系统 ============
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+*~
+.directory
+
+# ============ 测试覆盖率 ============
+coverage/
+.nyc_output/
+
+# ============ 临时文件 ============
+tmp/
+temp/
+*.tmp
+*.temp
+
+# ============ Docker ============
+.docker/
+docker-compose.override.yml
+
+# ============ 备份文件 ============
+*.bak
+*.backup
+*.old
+
+# ============ 项目特定 ============
+# 上传文件（如果有）
+uploads/
+media/
+static/
+public/uploads/
+
+# 数据库（如果有）
+*.db
+*.sqlite
+*.sqlite3
+
+# 配置文件（包含敏感信息）
+config.local.*
+*.config.local
+prisma/generated/
+prisma/migrations/
+ecosystem.config.cjs
+erp-backend.xml
+erp-context.xml
+repomix.config.json
+vitest.config.ts
+vitest.setup.ts
