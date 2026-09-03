@@ -53,7 +53,15 @@ export const createBomRepository = (prisma: PrismaClient) => {
         include: { items: true },
       });
     },
-
+    /** 查询 BOM 直接子物料 ID 列表（领料校验专用，不递归） */
+    async findDirectMaterialIdsByBomId(bomId: string, tx?: TxContext) {
+      const client = getClient(tx);
+      const items = await client.bomItem.findMany({
+        where: { bomId },
+        select: { materialId: true },
+      });
+      return items.map((i) => i.materialId);
+    },
     /**
      * 根据 productId 查找非废弃版本的 BOM（含明细）
      */

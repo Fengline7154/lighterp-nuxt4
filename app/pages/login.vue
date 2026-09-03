@@ -15,16 +15,42 @@
       <Loginform />
     </div>
 
-    <!-- 备案号固定底部 -->
-    <div class="text-center py-4">
-      <a
-        href="https://beian.miit.gov.cn/"
-        target="_blank"
-        rel="noopener noreferrer"
-        class="text-xs text-slate-400 hover:text-slate-500 transition"
+    <!-- 备案号固定底部 - 同一行显示 -->
+    <div
+      class="py-4 px-4 border-t border-gray-100 bg-white/50 backdrop-blur-sm"
+    >
+      <div
+        class="flex flex-col sm:flex-row items-center justify-center gap-2 sm:gap-4 text-xs text-slate-400"
       >
-        浙ICP备2026070174号-1
-      </a>
+        <!-- ICP备案号 -->
+        <a
+          href="https://beian.miit.gov.cn/"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="hover:text-slate-600 transition-colors"
+        >
+          浙ICP备2026070174号-1
+        </a>
+
+        <!-- 分隔符 -->
+        <span class="hidden sm:inline text-slate-300 select-none">|</span>
+        <span class="sm:hidden w-8 h-px bg-slate-200"></span>
+
+        <!-- 网安图标和备案号 -->
+        <a
+          href="https://beian.mps.gov.cn/#/query/webSearch?code=33082502000460"
+          rel="noreferrer"
+          target="_blank"
+          class="flex items-center gap-1.5 hover:text-slate-600 transition-colors group"
+        >
+          <img
+            src="/ico/beian.png"
+            alt="公安联网备案"
+            class="w-4 h-4 group-hover:scale-110 transition-transform"
+          />
+          <span>浙公网安备33082502000460号</span>
+        </a>
+      </div>
     </div>
   </div>
 </template>

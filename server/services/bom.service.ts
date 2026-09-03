@@ -76,7 +76,10 @@ export const createBomService = (prisma: PrismaClient) => {
         totalPages: Math.ceil(total / options.limit),
       };
     },
-
+    /** 查询 BOM 直接子物料 ID（领料校验专用） */
+    async findDirectMaterialIdsByBomId(bomId: string, tx?: TxContext) {
+      return bomRepo.findDirectMaterialIdsByBomId(bomId, tx);
+    },
     async getById(id: string) {
       const bom = await bomRepo.findById(id, {
         approver: { select: { badgeCode: true, name: true } },
@@ -255,7 +258,22 @@ export const createBomService = (prisma: PrismaClient) => {
         return bomRepo.obsoleteById(data.id, txCtx);
       });
     },
-
+    /** 替换 BOM 物料明细（用于订单换料时克隆 BOM 后替换 items） */
+    async replaceItems(
+      bomId: string,
+      items: Array<{
+        materialId: string;
+        materialName: string;
+        quantity: number | string;
+        unit?: string;
+        scrapRate?: number | string;
+      }>,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return bomRepo.replaceItems(bomId, items, txCtx);
+      });
+    },
     async cloneBom(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
       const { baseBomId, ...overrides } = cloneBomSchema.parse(rawdata);
 

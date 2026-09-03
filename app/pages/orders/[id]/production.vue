@@ -184,7 +184,7 @@
               <th class="py-3 px-2 w-20 text-right">不良数</th>
               <th class="py-3 px-2 w-24 text-right">预估成本</th>
               <th class="py-3 px-2 w-28">操作工</th>
-              <th class="py-3 px-2 w-16">类型</th>
+              <th class="py-3 px-2 w-20">类型</th>
               <th class="py-3 px-2 w-20 text-right">工时</th>
               <th class="py-3 px-2 w-24 text-right">工价</th>
               <th class="py-3 px-1 w-8"></th>

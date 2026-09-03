@@ -375,7 +375,6 @@ const actionLabel = (a: string) =>
     INIT: "初始化",
     RESERVE: "预留",
     RELEASE: "释放预留",
-    ALLOCATE: "调配",
     ROUTING_SAVE: "保存工序模板",
     PUBLISH: "发布BOM",
   })[a] || a;

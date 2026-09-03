@@ -157,7 +157,6 @@ model OrderReservation {
 enum ReservationType {
   PRODUCT_RESERVE // 成品库存预留
   MATERIAL_RESERVE // 物料预留
-  ALLOCATE // 调配
 }
 
 // 库存表（用于锁定、事务）
@@ -168,7 +167,6 @@ model Inventory {
   productName  String
   quantity     Decimal  @default(0) @db.Decimal(12, 4) // 当前库存数量
   reservedQty  Decimal  @default(0) @db.Decimal(12, 4) // 已预留数量（审批通过但未出库）
-  allocatedQty Decimal  @default(0) @db.Decimal(12, 4) // 已调配数量
   lockVersion  Int      @default(0)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -214,8 +212,6 @@ enum LogRelatedType {
   CHECK_OUT // 盘亏出库
   REVERSAL // 红冲
   OTHER // 其他
-  ALLOCATE // 调配给订单
-  DEALLOCATE // 撤回调配
 }
 
 //bom表
@@ -548,7 +544,7 @@ model OrderProcessPlan {
   status         PlanStatus      @default(PENDING)
   operatorId     String? // 操作员ID(用户,而非员工)
   operator       User?           @relation(fields: [operatorId], references: [id])
-  startTime      DateTime?
+  startTime      DateTime?       @default(now())
   endTime        DateTime?
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt

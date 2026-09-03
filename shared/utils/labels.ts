@@ -38,7 +38,6 @@ export const actionLabels: Record<string, string> = {
   INIT: "初始化",
   RESERVE: "预留",
   RELEASE: "释放预留",
-  ALLOCATE: "调配",
   ROUTING_SAVE: "保存工序模板",
   PUBLISH: "发布BOM",
   CLONE: "克隆BOM",
@@ -66,7 +65,6 @@ export const actionIcons: Record<string, string> = {
   INIT: "🏁",
   RESERVE: "🔒",
   RELEASE: "🔓",
-  ALLOCATE: "📋",
   ROUTING_SAVE: "💾",
   PUBLISH: "✅",
   CLONE: "📋",
@@ -92,7 +90,6 @@ export const actionBadges: Record<string, string> = {
   INIT: "bg-slate-100 text-slate-600 border-slate-300",
   RESERVE: "bg-amber-100 text-amber-800 border-amber-300",
   RELEASE: "bg-teal-100 text-teal-800 border-teal-300",
-  ALLOCATE: "bg-indigo-100 text-indigo-800 border-indigo-300",
 };
 
 // ==================== 字段名映射 ====================
@@ -194,7 +191,6 @@ export const valueLabels: Record<string, Record<string, string>> = {
   reservationType: {
     PRODUCT_RESERVE: "成品预留",
     MATERIAL_RESERVE: "物料预留",
-    ALLOCATE: "调配",
   },
   logRelatedType: {
     INIT: "初始化",
@@ -211,8 +207,6 @@ export const valueLabels: Record<string, Record<string, string>> = {
     CHECK_OUT: "盘亏出库",
     REVERSAL: "红冲",
     OTHER: "其他",
-    ALLOCATE: "调配",
-    DEALLOCATE: "撤回调配",
   },
   costDirection: {
     IN: "入库",

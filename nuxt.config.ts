@@ -9,7 +9,6 @@ export default defineNuxtConfig({
   ],
 
   runtimeConfig: {
-    mongoUrl: process.env.NUXT_MONGODB_URI,
     jwtKey: process.env.NUXT_JWT_PRIVATE_KEY,
     redisHost: process.env.NUXT_REDIS_HOST,
     redisPort: process.env.NUXT_REDIS_PORT,

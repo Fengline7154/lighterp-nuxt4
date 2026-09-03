@@ -505,7 +505,6 @@ const typeBadge = (t: string) => {
     "SCRAP_OUT",
     "TRANSFER_OUT",
     "CHECK_OUT",
-    "ALLOCATE",
   ].includes(t);
   if (isIn) return "bg-green-100 text-green-800 border-green-300";
   if (isOut) return "bg-red-100 text-red-800 border-red-300";

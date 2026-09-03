@@ -16,6 +16,8 @@ import { createError } from "h3";
 import { createOrderService } from "../services/order.service";
 import { createOrderItemService } from "../services/order-item.service";
 import { createOrderItemRepository } from "../repositories/postgres/order-item.repository";
+import { createReceiptService } from "../services/receipt.service";
+import { createBomService } from "../services/bom.service";
 
 export const createInventoryApplication = (prisma: PrismaClient) => {
   const inventoryService = createInventoryService(prisma);
@@ -26,7 +28,8 @@ export const createInventoryApplication = (prisma: PrismaClient) => {
   const reservationService = createReservationService(prisma);
   const orderService = createOrderService(prisma);
   const orderItemService = createOrderItemService(prisma);
-  const orderItemRepo = createOrderItemRepository(prisma);
+  const bomService = createBomService(prisma);
+
   // ==================== 工具函数 ====================
 
   function typeLabel(type: string): string {
@@ -44,7 +47,6 @@ export const createInventoryApplication = (prisma: PrismaClient) => {
       CHECK_OUT: "盘亏出库",
       REVERSAL: "红冲",
       OTHER: "其他",
-      ALLOCATE: "调配",
       INIT: "初始化",
     };
     return map[type] || type;
@@ -176,6 +178,93 @@ export const createInventoryApplication = (prisma: PrismaClient) => {
           throw createError({ statusCode: 400, message: "产品不存在或已停用" });
         }
 
+        // ==================== 生产领料专属逻辑 ====================
+        if (type === "PRODUCTION_OUT") {
+          if (!data.orderId) {
+            throw createError({
+              statusCode: 400,
+              message: "生产领料必须关联订单",
+            });
+          }
+
+          // 1. 校验订单状态
+          const order = await orderService.getOrderById(data.orderId);
+          if (!order || !["APPROVED", "PRODUCING"].includes(order.status)) {
+            throw createError({
+              statusCode: 400,
+              message: "订单不存在或当前状态不允许领料",
+            });
+          }
+
+          // 2. 校验物料属于订单明细产品或任一 BOM 直接子物料
+          const orderItems = await orderItemService.findByOrderId(
+            data.orderId,
+            txCtx,
+          );
+          const allowedMaterialIds = new Set<string>();
+
+          for (const item of orderItems) {
+            allowedMaterialIds.add(item.productId);
+            if (item.bomId) {
+              const directIds = await bomService.findDirectMaterialIdsByBomId(
+                item.bomId,
+                txCtx,
+              );
+              for (const id of directIds) allowedMaterialIds.add(id);
+            }
+          }
+
+          if (!allowedMaterialIds.has(data.productId)) {
+            throw createError({
+              statusCode: 400,
+              message:
+                "该物料不属于此订单产品或其 BOM 直接物料，请确认领料单或订单号",
+            });
+          }
+
+          // 3. 查未消耗预留并消耗（软校验，允许超额）
+          const reservations = await reservationService.findUnconsumed(
+            data.orderId,
+            data.productId,
+            "MATERIAL_RESERVE",
+            txCtx,
+          );
+
+          const qty = createDecimal(data.quantity);
+          let remaining = qty;
+
+          for (const res of reservations) {
+            if (remaining.lte(0)) break;
+            const total = createDecimal(String(res.quantity));
+            const consumed = createDecimal(String(res.consumedQty));
+            const released = createDecimal(String(res.released));
+            const available = total.minus(consumed).minus(released);
+            if (available.lte(0)) continue;
+
+            const toConsume = remaining.lt(available) ? remaining : available;
+
+            // 4a. 更新 OrderReservation.consumedQty
+            await reservationService.incrementConsumedQty(
+              res.id,
+              toPrismaDecimal(toConsume),
+              txCtx,
+            );
+
+            // 4b. 减少 Inventory.reservedQty（释放预留）
+            await inventoryService.release(
+              {
+                productId: data.productId,
+                qty: Number(toConsume.toString()),
+                relatedCode: data.orderId,
+              },
+              txCtx,
+            );
+
+            remaining = remaining.minus(toConsume);
+          }
+        }
+
+        // ==================== 通用出库主流程 ====================
         const result = await inventoryService.deduct(
           {
             productId: data.productId,
@@ -436,123 +525,6 @@ export const createInventoryApplication = (prisma: PrismaClient) => {
         }
 
         return { success: true, count: results.length };
-      });
-    },
-
-    /**
-     * 调配库存（修改 allocatedQty，不改变总库存数量）
-     */
-    async allocate(ctx: RequestContext, rawdata: unknown) {
-      const { productId, orderCode, quantity } = rawdata as {
-        productId: string;
-        orderCode: string;
-        quantity: number;
-      };
-
-      return prisma.$transaction(async (tx) => {
-        const txCtx = createPrismaTxContext(tx);
-
-        // 1. 查订单
-        const order = await orderService.findByOrderCode?.(orderCode, txCtx);
-        if (!order)
-          throw createError({ statusCode: 404, message: "订单不存在" });
-
-        // 2. 查订单明细
-        const orderItem = await orderItemService.findByOrderIdAndProductId(
-          order.id,
-          productId,
-          txCtx,
-        );
-        if (!orderItem)
-          throw createError({ statusCode: 400, message: "该订单不包含此产品" });
-
-        // 3. 汇总已调配量
-        const allocations = await reservationService.findByOrderId(
-          order.id,
-          txCtx,
-        );
-        const allocatedQty = allocations.data
-          .filter((r) => r.productId === productId && r.type === "ALLOCATE")
-          .reduce((sum, r) => {
-            const q = createDecimal(String(r.quantity));
-            const rel = createDecimal(String(r.released));
-            return sum.plus(q.minus(rel));
-          }, createDecimal(0));
-
-        // 4. 计算上限：需求量 - 已入库量 - 已调配量
-        const demand = createDecimal(String(orderItem.quantity));
-        const fulfilled = createDecimal(String(orderItem.fulfilledQuantity));
-        const maxAllocate = demand.minus(fulfilled).minus(allocatedQty);
-        if (maxAllocate.lte(0)) {
-          throw createError({
-            statusCode: 400,
-            message: "该订单此产品无需更多调配",
-          });
-        }
-
-        let qty = createDecimal(quantity);
-        if (qty.gt(maxAllocate)) qty = maxAllocate;
-
-        // 5. 检查可用库存
-        const stock = await inventoryService.getAvailableStock(
-          productId,
-          txCtx,
-        );
-        if (!stock)
-          throw createError({ statusCode: 404, message: "库存记录不存在" });
-        if (stock.availableQty.lt(qty)) {
-          throw createError({
-            statusCode: 400,
-            message: `可用库存不足，当前可用: ${stock.availableQty.toString()}`,
-          });
-        }
-
-        // 6. 更新 allocatedQty
-        const updated = await inventoryService.markAllocated(
-          productId,
-          qty,
-          stock.lockVersion,
-          txCtx,
-        );
-        if (!updated)
-          throw createError({ statusCode: 409, message: "操作冲突，请重试" });
-
-        // 7. 更新订单明细：fulfilledQuantity（调配视为既有成品）
-        await orderItemService.incrementFulfilledQty(
-          orderItem.id,
-          toPrismaDecimal(qty),
-          txCtx,
-        );
-
-        // 8. 记录调配预留
-        await reservationService.createMany(
-          [
-            {
-              orderId: order.id,
-              productId,
-              type: "ALLOCATE",
-              quantity: toPrismaDecimal(qty),
-            },
-          ],
-          txCtx,
-        );
-
-        // 9. 审计
-        await auditService.log(
-          ctx.operatorId,
-          "Inventory",
-          productId,
-          "ALLOCATE",
-          {
-            remark: `调配 ${qty.toString()} 至订单 ${orderCode}${qty.lt(createDecimal(quantity)) ? `（申请 ${quantity}，已达上限）` : ""}`,
-          },
-        );
-
-        return {
-          success: true,
-          allocatedQty: qty.toString(),
-          maxAllocate: maxAllocate.toString(),
-        };
       });
     },
 

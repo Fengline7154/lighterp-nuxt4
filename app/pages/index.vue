@@ -1,12 +1,12 @@
 <template>
-  <div></div>
+  <div />
 </template>
 
 <script setup lang="ts">
-const { data } = await useFetch("/api/setup/status");
+const authStore = useAuthStore();
 
-if (data.value?.needSetup) {
-  await navigateTo("/setup");
+if (authStore.isAuthenticated) {
+  await navigateTo("/dashboard");
 } else {
   await navigateTo("/login");
 }

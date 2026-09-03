@@ -152,12 +152,20 @@ export const createProductionLogService = (prisma: PrismaClient) => {
             ? "COMPLETED"
             : "IN_PROGRESS";
 
-          const updateData: any = {
+          const updateData: {
+            completedQty: string | number;
+            qualifiedQty: string | number;
+            defectiveQty: string | number;
+            status: any;
+            endTime?: Date;
+            startTime?: Date;
+          } = {
             completedQty: toPrismaDecimal(newCompleted),
             qualifiedQty: toPrismaDecimal(newQualified),
             defectiveQty: toPrismaDecimal(newDefective),
             status: newStatus as any,
           };
+
           if (newStatus === "COMPLETED") updateData.endTime = new Date();
           if (plan.status === "PENDING") updateData.startTime = new Date();
 
@@ -403,12 +411,20 @@ export const createProductionLogService = (prisma: PrismaClient) => {
               ? "COMPLETED"
               : "IN_PROGRESS";
 
-            const updateData: any = {
+            const updateData: {
+              completedQty: string | number;
+              qualifiedQty: string | number;
+              defectiveQty: string | number;
+              status: any;
+              endTime?: Date;
+              startTime?: Date;
+            } = {
               completedQty: toPrismaDecimal(newCompleted),
               qualifiedQty: toPrismaDecimal(newQualified),
               defectiveQty: toPrismaDecimal(newDefective),
               status: newStatus as any,
             };
+
             if (newStatus === "COMPLETED") updateData.endTime = new Date();
             if (plan.status === "PENDING") updateData.startTime = new Date();
 

@@ -25,7 +25,7 @@
             &times;
           </button>
         </div>
-        <nav class="p-4 space-y-1 flex-1 overflow-y-auto">
+        <nav class="p-4 space-y-1 flex-1 overflow-y-auto sidebar-nav">
           <div
             v-for="group in filteredMenuGroups"
             :key="group.label"
@@ -247,6 +247,11 @@ const menuGroups = [
     icon: "⚙️",
     children: [
       { label: "操作日志", to: "/audit-logs", roles: ["admin", "manager"] },
+      {
+        label: "数据导出",
+        to: "/data-export",
+        roles: ["admin", "manager"],
+      },
     ],
   },
 ];
@@ -307,3 +312,13 @@ const handleLogout = async () => {
   await navigateTo("/login");
 };
 </script>
+<style lang="css" scoped>
+.sidebar-nav {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.sidebar-nav::-webkit-scrollbar {
+  display: none;
+}
+</style>

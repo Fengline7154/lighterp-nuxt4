@@ -15,28 +15,20 @@
           物料需求
         </button>
         <button
-          v-if="order?.status === 'APPROVED' || order?.status === 'PRODUCING'"
-          @click="openReceiptModal"
-          class="min-h-[44px] px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm"
-        >
-          入库
-        </button>
-        <button
-          v-if="order?.status === 'PRODUCING'"
-          @click="goToProduction"
-          class="min-h-[44px] px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition text-sm"
-        >
-          生产报工
-        </button>
-        <button
           v-if="
             order?.status &&
             ['PRODUCING', 'READY', 'COMPLETED'].includes(order.status)
           "
           @click="openProcessViewer"
-          class="min-h-[44px] px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition text-sm"
+          class="min-h-[44px] px-4 py-2 bg-slate-500 text-white rounded-lg hover:bg-slate-600 transition text-sm"
         >
           查看工序
+        </button>
+        <button
+          @click="openPrintModal"
+          class="min-h-[44px] px-4 py-2 bg-slate-500 text-white rounded-lg hover:bg-slate-600 transition text-sm"
+        >
+          打印报工单
         </button>
       </div>
     </div>
@@ -184,7 +176,7 @@
       </div>
     </div>
 
-    <!-- 报工弹窗 -->
+    <!-- 查看/编辑工序弹窗 -->
     <div
       v-if="showProcessViewer"
       class="fixed inset-0 z-50 flex items-center justify-center p-4"
@@ -194,9 +186,10 @@
         @click="showProcessViewer = false"
       />
       <div
-        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-2xl max-h-[80vh] overflow-auto"
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-2xl max-h-[85vh] overflow-auto"
       >
         <h2 class="text-lg font-bold mb-4">订单工序进度</h2>
+
         <div
           v-for="(product, index) in productGroups"
           :key="index"
@@ -206,13 +199,15 @@
             class="font-medium text-sm text-slate-500 mb-2 flex justify-between items-center"
           >
             <span>{{ product.productName }}</span>
-            <NuxtLink
-              :to="`/products/${product.productId}/routing?from=order&orderId=${order?.id}`"
-              class="text-xs text-indigo-500 hover:text-indigo-700"
+            <button
+              v-if="canEditPlans"
+              @click="openAddPlan(product)"
+              class="text-xs text-blue-500 hover:text-blue-700"
             >
-              工序配置 →
-            </NuxtLink>
+              + 添加工序
+            </button>
           </h3>
+
           <div
             v-if="product.plans.length === 0"
             class="text-sm text-slate-400 py-2"
@@ -225,45 +220,65 @@
               :key="plan.id"
               class="flex justify-between items-center border-b pb-2"
             >
-              <span>{{ plan.processName }}</span>
-              <span
-                class="text-sm"
-                :class="
-                  plan.status === 'COMPLETED'
-                    ? 'text-green-600'
-                    : 'text-blue-600'
-                "
-              >
-                {{ plan.completedQty }}/{{ plan.assignedQty }}
-                {{
-                  plan.status === "COMPLETED"
-                    ? "已完成"
-                    : plan.status === "IN_PROGRESS"
-                      ? "进行中"
-                      : "待开始"
-                }}
-              </span>
+              <span>{{ plan.sequence }}. {{ plan.processName }}</span>
+              <div class="flex items-center gap-2">
+                <span
+                  class="text-sm"
+                  :class="
+                    plan.status === 'COMPLETED'
+                      ? 'text-green-600'
+                      : 'text-blue-600'
+                  "
+                >
+                  {{ plan.completedQty }}/{{ plan.assignedQty }}
+                  {{
+                    plan.status === "COMPLETED"
+                      ? "已完成"
+                      : plan.status === "IN_PROGRESS"
+                        ? "进行中"
+                        : "待开始"
+                  }}
+                </span>
+                <button
+                  v-if="canEditPlans"
+                  @click="removePlan(product, plan)"
+                  class="text-red-400 hover:text-red-600 text-sm"
+                >
+                  删除
+                </button>
+              </div>
             </div>
           </div>
         </div>
+
         <div
           v-if="productGroups.length === 0"
           class="text-center text-slate-400 py-8"
         >
           该订单暂无工序计划
         </div>
+
         <div class="mt-4 flex gap-2">
           <NuxtLink
             v-if="processPlans.length > 0"
             :to="`/orders/${order?.id}/production`"
             class="flex-1 text-center min-h-[44px] py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm"
-            >去报工</NuxtLink
           >
+            去报工
+          </NuxtLink>
           <span
             v-else
             class="flex-1 text-center min-h-[44px] py-2 bg-slate-300 text-slate-500 rounded-lg text-sm"
-            >暂无工序，无法报工</span
           >
+            暂无工序，无法报工
+          </span>
+          <button
+            @click="handleSavePlans"
+            v-if="canEditPlans"
+            class="flex-1 min-h-[44px] bg-green-500 text-white py-2 rounded-lg hover:bg-green-600 transition text-sm"
+          >
+            保存工序
+          </button>
           <button
             @click="showProcessViewer = false"
             class="flex-1 min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
@@ -273,7 +288,132 @@
         </div>
       </div>
     </div>
+    <!-- 添加工序弹窗 -->
+    <div
+      v-if="showAddPlanModal"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showAddPlanModal = false"
+      />
+      <div
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-md max-h-[85vh] overflow-auto"
+      >
+        <h2 class="text-lg font-bold mb-4">
+          添加工序 — {{ addPlanForm.productName }}
+        </h2>
 
+        <!-- 选择模板 -->
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-slate-700 mb-1">
+            从模板选择 <span class="text-slate-400 text-xs">(可选)</span>
+          </label>
+          <select
+            v-model="addPlanForm.selectedTemplateId"
+            @change="onTemplateSelected"
+            class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm bg-white"
+          >
+            <option value="">手动输入</option>
+            <option v-for="t in productTemplates" :key="t.id" :value="t.id">
+              {{ t.sequence }}. {{ t.processName }}
+              <template v-if="t.wageType === 'HOURLY'">
+                （计时 {{ t.hourlyRate }}元/h）
+              </template>
+              <template v-else> （计件 {{ t.unitPrice }}元/件） </template>
+            </option>
+          </select>
+        </div>
+
+        <!-- 手动输入 -->
+        <div class="space-y-4">
+          <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1"
+              >工序名称</label
+            >
+            <input
+              v-model="addPlanForm.processName"
+              class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm"
+              placeholder="如：包装"
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1"
+              >顺序</label
+            >
+            <input
+              v-model.number="addPlanForm.sequence"
+              type="number"
+              min="1"
+              class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm"
+            />
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-slate-700 mb-1"
+              >工资类型</label
+            >
+            <select
+              v-model="addPlanForm.wageType"
+              class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm bg-white"
+            >
+              <option value="HOURLY">计时</option>
+              <option value="PIECE">计件</option>
+            </select>
+          </div>
+          <div v-if="addPlanForm.wageType === 'HOURLY'">
+            <label class="block text-sm font-medium text-slate-700 mb-1"
+              >小时工资</label
+            >
+            <input
+              v-model.number="addPlanForm.hourlyRate"
+              type="number"
+              min="0"
+              step="0.01"
+              class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm"
+            />
+          </div>
+          <div v-if="addPlanForm.wageType === 'PIECE'">
+            <label class="block text-sm font-medium text-slate-700 mb-1"
+              >计件单价</label
+            >
+            <input
+              v-model.number="addPlanForm.unitPrice"
+              type="number"
+              min="0"
+              step="0.01"
+              class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm"
+            />
+          </div>
+          <div v-if="addPlanForm.wageType === 'HOURLY'">
+            <label class="block text-sm font-medium text-slate-700 mb-1"
+              >标准工时</label
+            >
+            <input
+              v-model.number="addPlanForm.standardHours"
+              type="number"
+              min="0"
+              step="0.01"
+              class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm"
+            />
+          </div>
+        </div>
+
+        <div class="flex gap-2 mt-4">
+          <button
+            @click="confirmAddPlan"
+            class="flex-1 min-h-[44px] bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 transition text-sm"
+          >
+            确认
+          </button>
+          <button
+            @click="showAddPlanModal = false"
+            class="flex-1 min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
     <!-- 入库弹窗 -->
     <div
       v-if="showReceiptModal"
@@ -369,7 +509,287 @@
         </div>
       </div>
     </div>
+    <!-- 更换 BOM 弹窗 -->
+    <div
+      v-if="showReplaceBomModal"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showReplaceBomModal = false"
+      />
+      <div
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-lg max-h-[85vh] overflow-auto"
+      >
+        <h2 class="text-lg font-bold mb-4">更换 BOM 物料</h2>
 
+        <!-- 选择订单明细产品 -->
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-slate-700 mb-1"
+            >产品</label
+          >
+          <select
+            v-model="replaceBomForm.orderItemId"
+            class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm bg-white"
+          >
+            <option value="">选择产品</option>
+            <option
+              v-for="item in order?.items"
+              :key="item.id"
+              :value="item.id"
+            >
+              {{ item.productName }}
+            </option>
+          </select>
+        </div>
+
+        <!-- 替换列表 -->
+        <div class="space-y-3 mb-4">
+          <div
+            v-for="(row, index) in replaceBomRows"
+            :key="index"
+            class="border rounded-lg p-3 bg-slate-50"
+          >
+            <div class="grid grid-cols-2 gap-2 mb-2">
+              <button
+                @click="openOldMaterialPicker(index)"
+                class="min-h-[44px] border border-slate-300 rounded-lg px-3 py-2 text-sm text-left bg-white"
+                :class="row.oldMaterialId ? 'text-slate-900' : 'text-slate-400'"
+              >
+                {{ row.oldMaterialName || "选择原物料" }}
+              </button>
+              <button
+                @click="openNewMaterialPicker(index)"
+                class="min-h-[44px] border border-slate-300 rounded-lg px-3 py-2 text-sm text-left bg-white"
+                :class="row.newMaterialId ? 'text-slate-900' : 'text-slate-400'"
+              >
+                {{ row.newMaterialName || "选择替代料" }}
+              </button>
+            </div>
+            <div class="flex items-center gap-2">
+              <input
+                v-model.number="row.newQuantity"
+                type="number"
+                min="0.0001"
+                step="0.0001"
+                :placeholder="`新用量（默认 ${row.oldQuantity}）`"
+                class="flex-1 min-h-[44px] border border-slate-300 rounded-lg px-3 py-2 text-sm"
+              />
+
+              <button
+                @click="replaceBomRows.splice(index, 1)"
+                class="min-h-[44px] min-w-[44px] text-red-400 hover:text-red-600"
+              >
+                &times;
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <button
+          @click="addReplaceBomRow"
+          class="min-h-[44px] w-full px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm"
+        >
+          + 添加替换行
+        </button>
+
+        <div class="flex gap-2 mt-4">
+          <button
+            @click="handleReplaceBom"
+            class="flex-1 min-h-[44px] bg-orange-500 text-white py-2 rounded-lg hover:bg-orange-600 transition text-sm"
+          >
+            确认更换
+          </button>
+          <button
+            @click="showReplaceBomModal = false"
+            class="flex-1 min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 原物料选择弹窗 -->
+    <div
+      v-if="showOldMaterialPicker !== null"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showOldMaterialPicker = null"
+      />
+      <div
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-lg max-h-[80vh] flex flex-col"
+      >
+        <h2 class="text-lg font-bold mb-4">选择原物料</h2>
+        <div class="flex-1 overflow-y-auto space-y-1">
+          <button
+            v-for="m in currentBomItems"
+            :key="m.materialId"
+            @click="selectOldMaterial(showOldMaterialPicker, m)"
+            class="w-full text-left px-4 py-3 rounded-lg text-sm hover:bg-blue-50 transition border"
+          >
+            <span class="font-mono text-xs text-slate-400 mr-2">{{
+              m.materialCode
+            }}</span>
+            <span class="font-medium">{{ m.materialName }}</span>
+            <span class="text-xs text-slate-400 ml-2">{{ m.unit }}</span>
+            <span class="text-xs text-slate-400 ml-2"
+              >用量 {{ m.quantity }}</span
+            >
+          </button>
+        </div>
+        <button
+          @click="showOldMaterialPicker = null"
+          class="mt-4 w-full min-h-[44px] border py-2 rounded-lg text-sm"
+        >
+          取消
+        </button>
+      </div>
+    </div>
+
+    <!-- 替代料选择弹窗 -->
+    <div
+      v-if="showNewMaterialPicker !== null"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showNewMaterialPicker = null"
+      />
+      <div
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-lg max-h-[80vh] flex flex-col"
+      >
+        <h2 class="text-lg font-bold mb-4">选择替代料</h2>
+        <input
+          v-model="newMaterialSearch"
+          placeholder="搜索物料..."
+          class="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm mb-4 min-h-[44px]"
+        />
+        <div class="flex-1 overflow-y-auto space-y-1">
+          <button
+            v-for="p in filteredNewMaterials"
+            :key="p.id"
+            @click="selectNewMaterial(showNewMaterialPicker, p)"
+            class="w-full text-left px-4 py-3 rounded-lg text-sm hover:bg-blue-50 transition"
+          >
+            <span class="font-mono text-xs text-slate-400 mr-2">{{
+              p.code
+            }}</span>
+            <span class="font-medium">{{ p.name }}</span>
+            <span class="text-xs text-slate-400 ml-2">{{ p.unit }}</span>
+          </button>
+        </div>
+        <button
+          @click="showNewMaterialPicker = null"
+          class="mt-4 w-full min-h-[44px] border py-2 rounded-lg text-sm"
+        >
+          取消
+        </button>
+      </div>
+    </div>
+    <!-- 倒冲缺口警告弹窗 -->
+    <div
+      v-if="showShortageModal"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showShortageModal = false"
+      />
+      <div class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
+        <h2 class="text-lg font-bold mb-2 text-red-600">⚠️ 物料缺口警告</h2>
+        <p class="text-sm text-slate-500 mb-4">
+          以下物料库存和预留均不足，可选择替代料或稍后处理：
+        </p>
+
+        <div class="space-y-3 max-h-[50vh] overflow-y-auto">
+          <div
+            v-for="(warning, index) in shortageWarnings"
+            :key="warning.productId"
+            class="bg-red-50 border border-red-200 rounded-lg p-3"
+          >
+            <div class="flex justify-between items-center">
+              <span class="text-sm font-medium text-red-700">
+                {{ warning.productName }}
+              </span>
+              <span class="text-sm text-red-600 font-bold">
+                缺口 {{ warning.shortageQty }}
+              </span>
+            </div>
+            <button
+              @click="openSubstitutePicker(index)"
+              class="mt-2 w-full min-h-[36px] px-3 py-1 bg-white border border-red-300 text-red-600 rounded text-xs hover:bg-red-100 transition"
+            >
+              选择替代料
+            </button>
+          </div>
+        </div>
+
+        <button
+          @click="showShortageModal = false"
+          class="mt-4 w-full min-h-[44px] bg-red-500 text-white py-2 rounded-lg hover:bg-red-600 transition text-sm"
+        >
+          稍后处理
+        </button>
+      </div>
+    </div>
+
+    <!-- 替代料选择弹窗 -->
+    <div
+      v-if="showSubstitutePicker !== null"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showSubstitutePicker = null"
+      />
+      <div
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-lg max-h-[80vh] flex flex-col"
+      >
+        <h2 class="text-lg font-bold mb-2">选择替代料</h2>
+        <p class="text-sm text-slate-500 mb-4">
+          {{ shortageWarnings[showSubstitutePicker]?.productName }}
+          缺口
+          {{ shortageWarnings[showSubstitutePicker]?.shortageQty }}
+        </p>
+
+        <input
+          v-model="substituteSearch"
+          placeholder="搜索物料..."
+          class="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm mb-4 min-h-[44px]"
+        />
+
+        <div class="flex-1 overflow-y-auto space-y-1">
+          <button
+            v-for="p in filteredSubstituteProducts"
+            :key="p.id"
+            @click="selectSubstitute(p)"
+            class="w-full text-left px-4 py-3 rounded-lg text-sm hover:bg-blue-50 transition border"
+          >
+            <span class="font-mono text-xs text-slate-400 mr-2">{{
+              p.code
+            }}</span>
+            <span class="font-medium">{{ p.name }}</span>
+            <span class="text-xs text-slate-400 ml-2">{{ p.unit }}</span>
+          </button>
+          <p
+            v-if="filteredSubstituteProducts.length === 0"
+            class="text-center text-slate-400 py-8"
+          >
+            无匹配物料
+          </p>
+        </div>
+
+        <button
+          @click="showSubstitutePicker = null"
+          class="mt-4 w-full min-h-[44px] border py-2 rounded-lg text-sm"
+        >
+          取消
+        </button>
+      </div>
+    </div>
     <!-- 打样领料弹窗 -->
     <div
       v-if="showPickModal"
@@ -860,6 +1280,28 @@
           >
             生产齐备
           </button>
+          <!-- 生产相关操作 -->
+          <button
+            v-if="order.status === 'PRODUCING'"
+            @click="goToProduction"
+            class="min-h-[44px] px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition text-sm"
+          >
+            生产报工
+          </button>
+          <button
+            v-if="order.status === 'APPROVED' || order.status === 'PRODUCING'"
+            @click="openReceiptModal"
+            class="min-h-[44px] px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm"
+          >
+            入库
+          </button>
+          <button
+            v-if="order.status === 'APPROVED' || order.status === 'PRODUCING'"
+            @click="openReplaceBomModal"
+            class="min-h-[44px] px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition text-sm"
+          >
+            更换 BOM
+          </button>
           <button
             v-if="
               order?.status &&
@@ -960,6 +1402,56 @@
         >
       </div>
     </div>
+    <!-- 打印报工单选择弹窗 -->
+    <div
+      v-if="showPrintModal"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showPrintModal = false"
+      />
+      <div class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
+        <h2 class="text-lg font-bold mb-4">选择打印产品</h2>
+        <select
+          v-model="printOrderItemId"
+          class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm bg-white mb-4"
+        >
+          <option value="">请选择产品</option>
+          <option v-for="item in order?.items" :key="item.id" :value="item.id">
+            {{ item.productName }}
+          </option>
+        </select>
+
+        <div class="mb-4">
+          <label class="block text-sm font-medium text-slate-700 mb-1">
+            空白行数 <span class="text-slate-400 text-xs">(默认 20 行)</span>
+          </label>
+          <input
+            v-model.number="printBlankRows"
+            type="number"
+            min="1"
+            max="50"
+            class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm"
+          />
+        </div>
+
+        <div class="flex gap-2">
+          <button
+            @click="confirmPrint"
+            class="flex-1 min-h-[44px] bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 transition text-sm"
+          >
+            打印
+          </button>
+          <button
+            @click="showPrintModal = false"
+            class="flex-1 min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -967,6 +1459,36 @@
 import type { OrderStatus } from "~~/prisma/generated/client";
 definePageMeta({ middleware: ["auth" as any] });
 
+// ==================== 基础工具 ====================
+const { apiFetch } = useApi();
+const toast = useToast();
+const route = useRoute();
+const showMoreMenu = ref(false);
+// ==================== 订单数据 ====================
+const {
+  data: order,
+  loading,
+  execute: loadOrder,
+} = useApiFetch<any>(() => `/api/orders/${route.params.id}`);
+await loadOrder();
+
+// ==================== 库存与产品基础数据 ====================
+const inventoryMap = ref<Record<string, any>>({});
+
+const { data: locationsData } = await useFetch(
+  "/api/locations?status=ACTIVE&limit=200",
+);
+const activeLocations = computed(
+  () => (locationsData.value as any)?.data || [],
+);
+const defaultLocation = computed(() =>
+  activeLocations.value.find((l: any) => l.isDefault),
+);
+
+const { data: productsData } = await useFetch("/api/products?limit=500");
+const allProducts = computed(() => (productsData.value as any)?.data || []);
+
+// ==================== 入库弹窗 ====================
 const showReceiptModal = ref(false);
 const receiptForm = reactive({
   orderItemId: "",
@@ -974,37 +1496,179 @@ const receiptForm = reactive({
   remark: "",
   locationId: "",
 });
-const showPickModal = ref(false);
-const pickForm = reactive({ orderItemId: "", quantity: 1, locationId: "" });
-const showApproveModal = ref(false);
-const reserveInputs = reactive<Record<string, number>>({});
-const inventoryMap = ref<Record<string, any>>({});
-const showShipModal = ref(false);
-const shipQtys = reactive<Record<string, number>>({});
-const shipLocationId = ref("");
 
-const { apiFetch } = useApi();
-const toast = useToast();
-const route = useRoute();
-const showPickProductPicker = ref<number | null>(null);
-const pickProductSearch = ref("");
-const pickItems = reactive<
-  Array<{
-    productId: string;
-    productCode: string;
-    productName: string;
-    quantity: number;
-    unit: string;
-  }>
->([{ productId: "", productCode: "", productName: "", quantity: 1, unit: "" }]);
-// 替换 useFetch → useApiFetch
-const {
-  data: order,
-  loading,
-  execute: loadOrder,
-} = useApiFetch<any>(() => `/api/orders/${route.params.id}`);
-await loadOrder();
-//物料需求计算相关
+const openReceiptModal = () => {
+  receiptForm.orderItemId = "";
+  receiptForm.quantity = 1;
+  receiptForm.remark = "";
+  receiptForm.locationId = defaultLocation.value?.id || ""; // 自动选默认库位
+  showReceiptModal.value = true;
+};
+
+const receiptUnit = computed(() => {
+  if (!receiptForm.orderItemId) return "";
+  const item = order.value?.items?.find(
+    (i: any) => i.id === receiptForm.orderItemId,
+  );
+  if (!item) return "";
+  const p = allProducts.value.find((p: any) => p.id === item.productId);
+  return p?.unit || "";
+});
+
+/**
+ * 提交入库
+ * 后端返回 { receipt, warnings }
+ * warnings 为倒冲物料缺口警告，非空时弹窗展示
+ */
+const handleReceipt = async () => {
+  if (!receiptForm.orderItemId) return toast.error("请选择产品");
+
+  // 提交前查完工数，弹确认
+  const item = order.value?.items?.find(
+    (i: any) => i.id === receiptForm.orderItemId,
+  );
+  const producedQty = Number(item?.producedQty || 0);
+  const receiptQty = Number(receiptForm.quantity);
+
+  if (receiptQty > producedQty) {
+    if (
+      !confirm(
+        `完工数 ${producedQty} 小于本次入库数 ${receiptQty}，是否继续入库？`,
+      )
+    ) {
+      return;
+    }
+  }
+
+  try {
+    const result = await apiFetch<any>(
+      `/api/orders/${route.params.id}/receipts`,
+      {
+        method: "POST",
+        body: {
+          orderItemId: receiptForm.orderItemId,
+          quantity: receiptForm.quantity,
+          remark: receiptForm.remark,
+          locationId: receiptForm.locationId || undefined,
+        },
+      },
+    );
+
+    // 处理字符串警告
+    const stringWarnings = (result?.warnings || []).filter(
+      (w: any) => typeof w === "string",
+    );
+    if (stringWarnings.length > 0) {
+      toast.error(stringWarnings.join("；"));
+    }
+
+    // 处理结构化缺口警告
+    const shortageList = (result?.warnings || []).filter(
+      (w: any) => typeof w === "object" && w.productId,
+    );
+
+    if (shortageList.length > 0) {
+      shortageWarnings.value = shortageList;
+      showShortageModal.value = true;
+      showReceiptModal.value = false;
+    } else {
+      if (stringWarnings.length === 0) {
+        toast.success("入库成功");
+      }
+      showReceiptModal.value = false;
+    }
+
+    await loadOrder();
+  } catch (e: any) {
+    toast.error(e, "入库失败");
+  }
+};
+
+// ==================== 倒冲缺口警告弹窗 ====================
+const showShortageModal = ref(false);
+
+interface ShortageWarning {
+  productId: string;
+  productName: string;
+  shortageQty: string;
+}
+
+const shortageWarnings = ref<ShortageWarning[]>([]);
+
+// ===================== 倒冲替代料 =====================
+const showSubstitutePicker = ref<number | null>(null);
+const substituteSearch = ref("");
+const substituteQty = ref(0);
+
+/**
+ * 过滤可选替代料
+ * 小厂场景：任意物料均可选作替代料，不做类别限制
+ */
+const filteredSubstituteProducts = computed(() => {
+  if (!substituteSearch.value.trim()) {
+    return allProducts.value.filter(
+      (p: any) =>
+        p.category === "RAW" ||
+        p.category === "PACKAGING" ||
+        p.category === "SEMI",
+    );
+  }
+  const q = substituteSearch.value.toLowerCase();
+  return allProducts.value.filter(
+    (p: any) =>
+      (p.category === "RAW" ||
+        p.category === "PACKAGING" ||
+        p.category === "SEMI") &&
+      (p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q)),
+  );
+});
+
+/**
+ * 打开替代料选择器
+ * @param index 缺口警告在 shortageWarnings 中的索引
+ */
+const openSubstitutePicker = (index: number) => {
+  showSubstitutePicker.value = index;
+  substituteSearch.value = "";
+  substituteQty.value = Number(shortageWarnings.value[index]?.shortageQty || 0);
+};
+
+/**
+ * 选择替代料并提交
+ * @param p 选中的替代料产品对象
+ */
+const selectSubstitute = async (p: any) => {
+  if (showSubstitutePicker.value === null) return;
+  const warning = shortageWarnings.value[showSubstitutePicker.value];
+  if (!warning) return;
+
+  try {
+    await apiFetch(`/api/inventory/substitute`, {
+      method: "POST",
+      body: {
+        productId: warning.productId, // 原缺口物料 ID
+        substituteProductId: p.id, // 替代料 ID
+        quantity: Number(warning.shortageQty), // 替代数量 = 缺口量
+        remark: `替代 ${warning.productName} 缺口`,
+      },
+    });
+
+    // 替代完成后从警告列表移除该条缺口
+    shortageWarnings.value.splice(showSubstitutePicker.value, 1);
+    showSubstitutePicker.value = null;
+
+    // 所有缺口处理完毕则关闭弹窗
+    if (shortageWarnings.value.length === 0) {
+      showShortageModal.value = false;
+      toast.success("替代完成");
+    } else {
+      toast.success("替代成功");
+    }
+  } catch (e: any) {
+    toast.error(e, "替代失败");
+  }
+};
+// ==================== 物料需求查看 ====================
 const showMaterialRequirements = ref(false);
 const materialRequirements = ref<any[]>([]);
 
@@ -1021,77 +1685,44 @@ watch(showMaterialRequirements, async (val) => {
   }
 });
 
+// ==================== 修改价格 ====================
 const showPriceModal = ref(false);
 const priceEdits = reactive<Record<string, number>>({});
-const showProcessViewer = ref(false);
-const processPlans = ref<any[]>([]);
 
-const { data: locationsData } = await useFetch(
-  "/api/locations?status=ACTIVE&limit=200",
-);
-const activeLocations = computed(
-  () => (locationsData.value as any)?.data || [],
-);
-const defaultLocation = computed(() =>
-  activeLocations.value.find((l: any) => l.isDefault),
-);
-
-const { data: productsData } = await useFetch("/api/products?limit=500");
-const allProducts = computed(() => (productsData.value as any)?.data || []);
-
-const openReceiptModal = () => {
-  receiptForm.orderItemId = "";
-  receiptForm.quantity = 1;
-  receiptForm.remark = "";
-  receiptForm.locationId = defaultLocation.value?.id || ""; // 自动选默认
-  showReceiptModal.value = true;
-};
-const receiptUnit = computed(() => {
-  if (!receiptForm.orderItemId) return "";
-  const item = order.value?.items?.find(
-    (i: any) => i.id === receiptForm.orderItemId,
-  );
-  if (!item) return "";
-  const p = allProducts.value.find((p: any) => p.id === item.productId);
-  return p?.unit || "";
+const canEditPrice = computed(() => {
+  const s = order.value?.status;
+  return s && !["PRODUCING", "READY", "COMPLETED", "CANCELLED"].includes(s);
 });
 
-const pickUnit = computed(() => {
-  if (!pickForm.orderItemId) return "";
-  const item = order.value?.items?.find(
-    (i: any) => i.id === pickForm.orderItemId,
-  );
-  if (!item) return "";
-  const p = allProducts.value.find((p: any) => p.id === item.productId);
-  return p?.unit || "";
-});
-
-const getProductUnit = (productId: string) => {
-  const p = allProducts.value.find((p: any) => p.id === productId);
-  return p?.unit || "";
+const openPriceModal = () => {
+  if (order.value?.items)
+    for (const item of order.value.items)
+      priceEdits[item.id] = Number(item.unitPrice) || 0;
+  showPriceModal.value = true;
 };
 
-const goToCreateBom = async () => {
-  const item = order.value?.items?.[0];
-  if (!item) return;
-
-  // 查该产品已关联的 BOM
+const handleUpdatePrice = async () => {
+  const itemsToUpdate = (order.value?.items || [])
+    .filter(
+      (item: any) =>
+        priceEdits[item.id] !== undefined &&
+        priceEdits[item.id] !== Number(item.unitPrice),
+    )
+    .map((item: any) => ({ id: item.id, unitPrice: priceEdits[item.id] }));
+  if (itemsToUpdate.length === 0) {
+    toast.error("没有修改任何单价");
+    return;
+  }
   try {
-    const res = await apiFetch<any>(
-      `/api/bom?productId=${item.productId}&limit=1`,
-    );
-    const bomId = res.data?.[0]?.id;
-    if (bomId) {
-      await navigateTo(`/bom/${bomId}`);
-    } else {
-      await navigateTo(
-        `/bom/create?productId=${item.productId}&productName=${encodeURIComponent(item.productName)}&orderId=${order.value!.id}`,
-      );
-    }
-  } catch {
-    await navigateTo(
-      `/bom/create?productId=${item.productId}&productName=${encodeURIComponent(item.productName)}&orderId=${order.value!.id}`,
-    );
+    await apiFetch(`/api/orders/${route.params.id}/update`, {
+      method: "PATCH",
+      body: { items: itemsToUpdate },
+    });
+    toast.success("单价已更新");
+    showPriceModal.value = false;
+    await loadOrder();
+  } catch (e: any) {
+    toast.error(e, "修改失败");
   }
 };
 
@@ -1107,23 +1738,60 @@ const goToProduction = async () => {
     toast.error(e, "检查工序失败");
   }
 };
+// ==================== 工序查看与编辑 ====================
+const showProcessViewer = ref(false);
+const processPlans = ref<any[]>([]);
 
+const canEditPlans = computed(() => {
+  const s = order.value?.status;
+  return s && ["APPROVED", "PRODUCING"].includes(s);
+});
+
+/**
+ * 按产品分组的工序计划
+ * 每个产品包含 orderItemId，确保工序删光后仍能新增
+ */
 const productGroups = computed(() => {
   const map = new Map<
     string,
-    { productId: string; productName: string; plans: any[] }
+    {
+      productId: string;
+      orderItemId: string;
+      productName: string;
+      plans: any[];
+    }
   >();
+
+  // 先遍历工序计划，按产品分组
   for (const plan of processPlans.value) {
-    const key = plan.productId || plan.orderItemId;
-    if (!map.has(key))
+    const key = plan.orderItemId || plan.productId;
+    if (!map.has(key)) {
       map.set(key, {
-        productId: plan.productId || plan.orderItem?.productId || "",
+        productId: plan.productId || "",
+        orderItemId: plan.orderItemId || "",
         productName:
           plan.product?.name || plan.orderItem?.productName || "未知产品",
         plans: [],
       });
+    }
     map.get(key)!.plans.push(plan);
   }
+
+  // 补全订单明细中可能没有工序计划的产品
+  if (order.value?.items) {
+    for (const item of order.value.items) {
+      const existing = [...map.values()].find((g) => g.orderItemId === item.id);
+      if (!existing) {
+        map.set(`empty_${item.id}`, {
+          productId: item.productId,
+          orderItemId: item.id,
+          productName: item.productName,
+          plans: [],
+        });
+      }
+    }
+  }
+
   return [...map.values()];
 });
 
@@ -1137,11 +1805,168 @@ const openProcessViewer = async () => {
   }
 };
 
-const canComplete = computed(() =>
-  order.value?.items?.every(
-    (item: any) => (item.shippedQuantity || 0) >= item.quantity,
-  ),
-);
+// ==================== 添加工序 ====================
+const showAddPlanModal = ref(false);
+const addPlanForm = reactive({
+  orderItemId: "",
+  productId: "",
+  productName: "",
+  selectedTemplateId: "",
+  processName: "",
+  sequence: 1,
+  wageType: "HOURLY",
+  hourlyRate: 0,
+  unitPrice: 0,
+  standardHours: 0,
+});
+
+const productTemplates = ref<any[]>([]);
+
+const openAddPlan = async (product: any) => {
+  if (!product.orderItemId) {
+    toast.error("找不到对应订单明细");
+    return;
+  }
+
+  addPlanForm.orderItemId = product.orderItemId;
+  addPlanForm.productId = product.productId;
+  addPlanForm.productName = product.productName;
+  addPlanForm.selectedTemplateId = "";
+  addPlanForm.processName = "";
+  addPlanForm.sequence = product.plans.length + 1;
+  addPlanForm.wageType = "HOURLY";
+  addPlanForm.hourlyRate = 0;
+  addPlanForm.unitPrice = 0;
+  addPlanForm.standardHours = 0;
+
+  // 加载该产品的工序模板
+  try {
+    const res = await $fetch(`/api/routings?productId=${product.productId}`);
+    productTemplates.value = (res as any)?.data || [];
+  } catch {
+    productTemplates.value = [];
+  }
+
+  showAddPlanModal.value = true;
+};
+
+// 选择模板后自动填充表单
+const onTemplateSelected = () => {
+  if (!addPlanForm.selectedTemplateId) return;
+  const template = productTemplates.value.find(
+    (t: any) => t.id === addPlanForm.selectedTemplateId,
+  );
+  if (!template) return;
+
+  addPlanForm.processName = template.processName;
+  addPlanForm.wageType = template.wageType || "HOURLY";
+  addPlanForm.hourlyRate = template.hourlyRate
+    ? Number(template.hourlyRate)
+    : 0;
+  addPlanForm.unitPrice = template.unitPrice ? Number(template.unitPrice) : 0;
+  addPlanForm.standardHours = template.standardHours
+    ? Number(template.standardHours)
+    : 0;
+};
+
+const confirmAddPlan = async () => {
+  if (!addPlanForm.orderItemId) return toast.error("订单明细不完整");
+  if (!addPlanForm.processName.trim()) return toast.error("请输入或选择工序");
+
+  try {
+    await apiFetch(`/api/orders/${route.params.id}/plans`, {
+      method: "POST",
+      body: {
+        orderItemId: addPlanForm.orderItemId,
+        plans: [
+          {
+            sequence: addPlanForm.sequence,
+            processName: addPlanForm.processName,
+            wageType: addPlanForm.wageType,
+            standardHours: addPlanForm.standardHours || undefined,
+            hourlyRate: addPlanForm.hourlyRate || undefined,
+            unitPrice: addPlanForm.unitPrice || undefined,
+          },
+        ],
+      },
+    });
+    toast.success("工序已添加");
+    showAddPlanModal.value = false;
+    await openProcessViewer();
+  } catch (e: any) {
+    toast.error(e, "添加工序失败");
+  }
+};
+
+// ==================== 删除工序 ====================
+const removePlan = async (product: any, plan: any) => {
+  if (!confirm(`确认删除工序「${plan.processName}」？`)) return;
+
+  try {
+    const remainingPlans = product.plans
+      .filter((p: any) => p.id !== plan.id)
+      .map((p: any, i: number) => ({
+        id: p.id,
+        sequence: i + 1,
+        processName: p.processName,
+        wageType: p.wageType,
+        hourlyRate: p.hourlyRate ? Number(p.hourlyRate) : undefined,
+        unitPrice: p.unitPrice ? Number(p.unitPrice) : undefined,
+        standardHours: p.standardHours ? Number(p.standardHours) : undefined,
+      }));
+
+    await apiFetch(`/api/orders/${route.params.id}/plans`, {
+      method: "POST",
+      body: {
+        orderItemId: product.orderItemId,
+        plans: remainingPlans,
+      },
+    });
+    toast.success("工序已删除");
+    await openProcessViewer();
+  } catch (e: any) {
+    toast.error(e, "删除工序失败");
+  }
+};
+
+// ==================== 保存工序（整体提交） ====================
+const handleSavePlans = async () => {
+  try {
+    for (const product of productGroups.value) {
+      const plans = product.plans.map((p: any, i: number) => ({
+        id: p.id,
+        sequence: i + 1,
+        processName: p.processName,
+        wageType: p.wageType,
+        hourlyRate: p.hourlyRate ? Number(p.hourlyRate) : undefined,
+        unitPrice: p.unitPrice ? Number(p.unitPrice) : undefined,
+        standardHours: p.standardHours ? Number(p.standardHours) : undefined,
+      }));
+
+      await apiFetch(`/api/orders/${route.params.id}/plans`, {
+        method: "POST",
+        body: {
+          orderItemId: product.orderItemId,
+          plans,
+        },
+      });
+    }
+    toast.success("工序已保存");
+    await openProcessViewer();
+  } catch (e: any) {
+    toast.error(e, "保存工序失败");
+  }
+};
+// ==================== 发货 ====================
+const showShipModal = ref(false);
+const shipQtys = reactive<Record<string, number>>({});
+const shipLocationId = ref("");
+
+const getAvailableStock = (productId: string) => {
+  const inv = inventoryMap.value[productId];
+  if (!inv) return 0;
+  return Math.max(0, inv.quantity - (inv.reservedQty || 0));
+};
 
 const openShipModal = async () => {
   try {
@@ -1192,86 +2017,15 @@ const confirmShip = async () => {
   }
 };
 
-const canEditPrice = computed(() => {
-  const s = order.value?.status;
-  return s && !["PRODUCING", "READY", "COMPLETED", "CANCELLED"].includes(s);
-});
+const canComplete = computed(() =>
+  order.value?.items?.every(
+    (item: any) => (item.shippedQuantity || 0) >= item.quantity,
+  ),
+);
 
-const openPriceModal = () => {
-  if (order.value?.items)
-    for (const item of order.value.items)
-      priceEdits[item.id] = Number(item.unitPrice) || 0;
-  showPriceModal.value = true;
-};
-
-const handleUpdatePrice = async () => {
-  const itemsToUpdate = (order.value?.items || [])
-    .filter(
-      (item: any) =>
-        priceEdits[item.id] !== undefined &&
-        priceEdits[item.id] !== Number(item.unitPrice),
-    )
-    .map((item: any) => ({ id: item.id, unitPrice: priceEdits[item.id] }));
-  if (itemsToUpdate.length === 0) {
-    toast.error("没有修改任何单价");
-    return;
-  }
-  try {
-    await apiFetch(`/api/orders/${route.params.id}/update`, {
-      method: "PATCH",
-      body: { items: itemsToUpdate },
-    });
-    toast.success("单价已更新");
-    showPriceModal.value = false;
-    await loadOrder();
-  } catch (e: any) {
-    toast.error(e, "修改失败");
-  }
-};
-
-const typeLabel = (t: string) =>
-  ({ STANDARD: "标准品", VARIANT: "变型品", CUSTOM: "定制品" })[t] || t;
-const statusLabel = (s: string) =>
-  ({
-    PENDING: "待审核",
-    APPROVED: "已审核",
-    SAMPLING: "打样中",
-    SAMPLED: "打样完成",
-    PRODUCING: "生产中",
-    READY: "备货完成",
-    COMPLETED: "已完成",
-    CANCELLED: "已取消",
-  })[s] || s;
-const statusIcon = (s: string) =>
-  ({
-    PENDING: "⏳",
-    APPROVED: "✅",
-    SAMPLING: "🔬",
-    SAMPLED: "📋",
-    PRODUCING: "🏭",
-    READY: "📦",
-    COMPLETED: "🏁",
-    CANCELLED: "❌",
-  })[s] || "";
-const statusBadge = (s: string) => {
-  const m: Record<string, string> = {
-    PENDING: "bg-amber-100 text-amber-800 border-amber-300",
-    APPROVED: "bg-blue-100 text-blue-800 border-blue-300",
-    SAMPLING: "bg-orange-100 text-orange-800 border-orange-300",
-    SAMPLED: "bg-teal-100 text-teal-800 border-teal-300",
-    PRODUCING: "bg-purple-100 text-purple-800 border-purple-300",
-    READY: "bg-cyan-100 text-cyan-800 border-cyan-300",
-    COMPLETED: "bg-green-100 text-green-800 border-green-300",
-    CANCELLED: "bg-red-100 text-red-800 border-red-300",
-  };
-  return `inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border ${m[s] || "bg-slate-100 text-slate-600 border-slate-300"}`;
-};
-const formatDate = (d: string) => new Date(d).toLocaleDateString("zh-CN");
-const getAvailableStock = (productId: string) => {
-  const inv = inventoryMap.value[productId];
-  if (!inv) return 0;
-  return Math.max(0, inv.quantity - (inv.reservedQty || 0));
-};
+// ==================== 审核预留 ====================
+const showApproveModal = ref(false);
+const reserveInputs = reactive<Record<string, number>>({});
 
 const openApproveModal = async () => {
   if (order.value?.orderType !== "STANDARD") {
@@ -1324,7 +2078,7 @@ const handleApproveWithReservations = async () => {
       if (!confirm(`以下物料可能不足：\n\n${msg}\n\n是否继续审批？`)) return;
     }
 
-    const result = await apiFetch(`/api/orders/${route.params.id}/status`, {
+    await apiFetch(`/api/orders/${route.params.id}/status`, {
       method: "PATCH",
       body: { status: "APPROVED", reservations },
     });
@@ -1336,6 +2090,7 @@ const handleApproveWithReservations = async () => {
   }
 };
 
+// ==================== 状态变更 ====================
 const changeStatus = async (status: string) => {
   try {
     await apiFetch(`/api/orders/${route.params.id}/status`, {
@@ -1350,25 +2105,30 @@ const changeStatus = async (status: string) => {
   }
 };
 
-const handleReceipt = async () => {
-  if (!receiptForm.orderItemId) return toast.error("请选择产品");
-  try {
-    await apiFetch(`/api/orders/${route.params.id}/receipts`, {
-      method: "POST",
-      body: {
-        orderItemId: receiptForm.orderItemId,
-        quantity: receiptForm.quantity,
-        remark: receiptForm.remark,
-        locationId: receiptForm.locationId || undefined,
-      },
-    });
-    toast.success("入库成功");
-    showReceiptModal.value = false;
-    await loadOrder();
-  } catch (e: any) {
-    toast.error(e, "入库失败");
-  }
-};
+// ==================== 打样领料 ====================
+const showPickModal = ref(false);
+const pickForm = reactive({ orderItemId: "", quantity: 1, locationId: "" });
+const showPickProductPicker = ref<number | null>(null);
+const pickProductSearch = ref("");
+const pickItems = reactive<
+  Array<{
+    productId: string;
+    productCode: string;
+    productName: string;
+    quantity: number;
+    unit: string;
+  }>
+>([{ productId: "", productCode: "", productName: "", quantity: 1, unit: "" }]);
+
+const pickUnit = computed(() => {
+  if (!pickForm.orderItemId) return "";
+  const item = order.value?.items?.find(
+    (i: any) => i.id === pickForm.orderItemId,
+  );
+  if (!item) return "";
+  const p = allProducts.value.find((p: any) => p.id === item.productId);
+  return p?.unit || "";
+});
 
 const filteredPickProducts = computed(() => {
   if (!pickProductSearch.value.trim()) return allProducts.value;
@@ -1423,4 +2183,250 @@ const handlePick = async () => {
     toast.error(e, "领料失败");
   }
 };
+
+// ==================== BOM 跳转 ====================
+const goToCreateBom = async () => {
+  const item = order.value?.items?.[0];
+  if (!item) return;
+
+  try {
+    const res = await apiFetch<any>(
+      `/api/bom?productId=${item.productId}&limit=1`,
+    );
+    const bomId = res.data?.[0]?.id;
+    if (bomId) {
+      await navigateTo(`/bom/${bomId}`);
+    } else {
+      await navigateTo(
+        `/bom/create?productId=${item.productId}&productName=${encodeURIComponent(item.productName)}&orderId=${order.value!.id}`,
+      );
+    }
+  } catch {
+    await navigateTo(
+      `/bom/create?productId=${item.productId}&productName=${encodeURIComponent(item.productName)}&orderId=${order.value!.id}`,
+    );
+  }
+};
+// ==================== 更换 BOM ====================
+const showReplaceBomModal = ref(false);
+const replaceBomForm = reactive({
+  orderItemId: "",
+});
+const replaceBomRows = reactive<
+  Array<{
+    oldMaterialId: string;
+    oldMaterialName: string;
+    oldQuantity: number;
+    newMaterialId: string;
+    newMaterialName: string;
+    newQuantity: number | null;
+  }>
+>([]);
+
+const currentBomItems = ref<any[]>([]);
+const showOldMaterialPicker = ref<number | null>(null);
+const showNewMaterialPicker = ref<number | null>(null);
+const newMaterialSearch = ref("");
+
+const filteredNewMaterials = computed(() => {
+  if (!newMaterialSearch.value.trim()) {
+    return allProducts.value.filter(
+      (p: any) =>
+        p.category === "RAW" ||
+        p.category === "PACKAGING" ||
+        p.category === "SEMI",
+    );
+  }
+  const q = newMaterialSearch.value.toLowerCase();
+  return allProducts.value.filter(
+    (p: any) =>
+      (p.category === "RAW" ||
+        p.category === "PACKAGING" ||
+        p.category === "SEMI") &&
+      (p.name.toLowerCase().includes(q) || p.code.toLowerCase().includes(q)),
+  );
+});
+
+const openReplaceBomModal = async () => {
+  replaceBomForm.orderItemId = "";
+  replaceBomRows.length = 0;
+  currentBomItems.value = [];
+  showReplaceBomModal.value = true;
+};
+
+const addReplaceBomRow = () => {
+  replaceBomRows.push({
+    oldMaterialId: "",
+    oldMaterialName: "",
+    oldQuantity: 1,
+    newMaterialId: "",
+    newMaterialName: "",
+    newQuantity: null,
+  });
+};
+
+// 选择订单明细产品后，加载当前 BOM 子物料
+watch(
+  () => replaceBomForm.orderItemId,
+  async (val) => {
+    if (!val) return;
+    try {
+      const item = order.value?.items?.find((i: any) => i.id === val);
+      if (!item?.bomId) return;
+      const bom = await $fetch(`/api/bom/${item.bomId}`);
+      currentBomItems.value = (bom as any)?.items || [];
+    } catch {
+      currentBomItems.value = [];
+    }
+  },
+);
+
+const openOldMaterialPicker = (index: number) => {
+  showOldMaterialPicker.value = index;
+};
+
+const selectOldMaterial = (index: number, material: any) => {
+  const row = replaceBomRows[index];
+  if (!row) return;
+  row.oldMaterialId = material.materialId;
+  row.oldMaterialName = material.materialName;
+  row.oldQuantity = Number(material.quantity);
+  if (row.newQuantity === null) row.newQuantity = Number(material.quantity);
+  showOldMaterialPicker.value = null;
+};
+
+const openNewMaterialPicker = (index: number) => {
+  showNewMaterialPicker.value = index;
+  newMaterialSearch.value = "";
+};
+
+const selectNewMaterial = (index: number, product: any) => {
+  const row = replaceBomRows[index];
+  if (!row) return;
+  row.newMaterialId = product.id;
+  row.newMaterialName = product.name;
+  showNewMaterialPicker.value = null;
+};
+
+const handleReplaceBom = async () => {
+  if (!replaceBomForm.orderItemId) return toast.error("请选择产品");
+  const validRows = replaceBomRows.filter(
+    (r) => r.oldMaterialId && r.newMaterialId,
+  );
+  if (validRows.length === 0) return toast.error("请至少添加一条替换明细");
+
+  try {
+    const result = await apiFetch<any>(
+      `/api/orders/${route.params.id}/replace-bom`,
+      {
+        method: "POST",
+        body: {
+          orderItemId: replaceBomForm.orderItemId,
+          replacements: validRows.map((r) => ({
+            oldMaterialId: r.oldMaterialId,
+            newMaterialId: r.newMaterialId,
+            newQuantity: r.newQuantity || undefined,
+          })),
+        },
+      },
+    );
+
+    // 处理预留不足警告
+    if (result?.warnings && result.warnings.length > 0) {
+      toast.error(
+        `BOM 更换成功，但请注意以下物料预留不足：${result.warnings.join("；")}`,
+      );
+    } else {
+      toast.success("BOM 更换成功");
+    }
+
+    showReplaceBomModal.value = false;
+    await loadOrder();
+  } catch (e: any) {
+    toast.error(e, "BOM 更换失败");
+  }
+};
+//========================打印报工单================================================
+const showPrintModal = ref(false);
+const printOrderItemId = ref("");
+const printBlankRows = ref(20);
+const openPrintModal = () => {
+  if (!order.value?.items || order.value.items.length === 0) {
+    toast.error("订单无明细");
+    return;
+  }
+
+  // 默认选中第一个产品
+  printOrderItemId.value = order.value.items[0].id;
+  printBlankRows.value = 20;
+  showPrintModal.value = true;
+};
+
+const confirmPrint = async () => {
+  if (!printOrderItemId.value) {
+    toast.error("请选择产品");
+    return;
+  }
+
+  try {
+    const blob = await $fetch<Blob>(
+      `/api/documents/production/${order.value.id}/pdf?orderItemId=${printOrderItemId.value}&blankRows=${printBlankRows.value}`,
+      { responseType: "blob" },
+    );
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    showPrintModal.value = false;
+  } catch (e: any) {
+    toast.error(e?.data?.message || "打印失败");
+  }
+};
+// ==================== 工具函数 ====================
+const getProductUnit = (productId: string) => {
+  const p = allProducts.value.find((p: any) => p.id === productId);
+  return p?.unit || "";
+};
+
+const typeLabel = (t: string) =>
+  ({ STANDARD: "标准品", VARIANT: "变型品", CUSTOM: "定制品" })[t] || t;
+
+const statusLabel = (s: string) =>
+  ({
+    PENDING: "待审核",
+    APPROVED: "已审核",
+    SAMPLING: "打样中",
+    SAMPLED: "打样完成",
+    PRODUCING: "生产中",
+    READY: "备货完成",
+    COMPLETED: "已完成",
+    CANCELLED: "已取消",
+  })[s] || s;
+
+const statusIcon = (s: string) =>
+  ({
+    PENDING: "⏳",
+    APPROVED: "✅",
+    SAMPLING: "🔬",
+    SAMPLED: "📋",
+    PRODUCING: "🏭",
+    READY: "📦",
+    COMPLETED: "🏁",
+    CANCELLED: "❌",
+  })[s] || "";
+
+const statusBadge = (s: string) => {
+  const m: Record<string, string> = {
+    PENDING: "bg-amber-100 text-amber-800 border-amber-300",
+    APPROVED: "bg-blue-100 text-blue-800 border-blue-300",
+    SAMPLING: "bg-orange-100 text-orange-800 border-orange-300",
+    SAMPLED: "bg-teal-100 text-teal-800 border-teal-300",
+    PRODUCING: "bg-purple-100 text-purple-800 border-purple-300",
+    READY: "bg-cyan-100 text-cyan-800 border-cyan-300",
+    COMPLETED: "bg-green-100 text-green-800 border-green-300",
+    CANCELLED: "bg-red-100 text-red-800 border-red-300",
+  };
+  return `inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold border ${m[s] || "bg-slate-100 text-slate-600 border-slate-300"}`;
+};
+
+const formatDate = (d: string) => new Date(d).toLocaleDateString("zh-CN");
 </script>

@@ -15,9 +15,11 @@ export const addStockSchema = z.object({
 // 出库
 export const deductStockSchema = z.object({
   productId: z.uuid(),
+  orderId: z.string().optional(),
   quantity: z.coerce.number().positive("出库数量必须大于0"),
   type: z.enum(LogRelatedType).default("SALES_OUT"),
   remark: z.string().max(200).optional(),
+
   relatedCode: z.string().optional(),
   locationId: z.uuid().optional(),
 });
@@ -66,7 +68,7 @@ export const reserveSchema = z.object({
 
 /** 释放预留 */
 export const releaseSchema = z.object({
-  productId: z.string().uuid(),
+  productId: z.uuid(),
   qty: z.coerce.number().positive("释放数量必须大于0"),
   relatedCode: z.string().optional(),
 });

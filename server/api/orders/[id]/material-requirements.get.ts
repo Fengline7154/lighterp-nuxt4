@@ -94,12 +94,7 @@ export default defineEventHandler(async (event) => {
     const p = productMap.get(materialId);
     const inv = invMap.get(materialId);
     const availableQty = inv
-      ? Math.max(
-          0,
-          Number(inv.quantity) -
-            Number(inv.reservedQty) -
-            Number(inv.allocatedQty || 0),
-        )
+      ? Math.max(0, Number(inv.quantity) - Number(inv.reservedQty))
       : 0;
     const totalStock = inv ? Number(inv.quantity) : 0;
 

@@ -1,0 +1,4952 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files and files not matching ignore patterns, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: server/services/*.ts
+- Files matching these patterns are excluded: server/services/inventory.service.ts, composables/**/*.ts, composables/**/*.js, store/**/*.ts, store/**/*.js, plugins/**/*.ts, plugins/**/*.js, middleware/**/*.ts, middleware/**/*.js, nuxt.config.ts, app.config.ts, tsconfig.json, package.json, server/infrastructure/permissionTemplate.ts, node_modules/**, .nuxt/**, .output/**, dist/**, build/**, coverage/**, .vitest/**, logs/**, *.log, .env*, *.key, *.pem, *.crt, package-lock.json, yarn.lock, pnpm-lock.yaml, bun.lockb, .DS_Store, Thumbs.db, .vscode/**, .idea/**, .github/**, .gitlab/**, *.png, *.jpg, *.jpeg, *.gif, *.svg, *.ico, *.webp, *.mp4, *.mp3, *.woff, *.woff2, *.ttf, *.eot
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+server/services/analytics.service.ts
+server/services/audit.service.ts
+server/services/auth.service.ts
+server/services/bom.service.ts
+server/services/cost.service.ts
+server/services/customer.service.ts
+server/services/inventory-location.service.ts
+server/services/inventory-log.service.ts
+server/services/location.service.ts
+server/services/order-item.service.ts
+server/services/order-misc-cost.service.ts
+server/services/order.service.ts
+server/services/process.service.ts
+server/services/product-process-template.service.ts
+server/services/product.service.ts
+server/services/production-log.service.ts
+server/services/purchase-order.service.ts
+server/services/purchase-receipt.service.ts
+server/services/receipt.service.ts
+server/services/reservation.service.ts
+server/services/sequence.service.ts
+server/services/supplier.service.ts
+server/services/token.service.ts
+server/services/user.service.ts
+server/services/worker.service.ts
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="server/services/analytics.service.ts">
+// server/services/analytics.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createBomRepository } from "~~/server/repositories/postgres/bom.repository";
+import {
+  createDecimal,
+  type IDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+
+export const createAnalyticsService = (prisma: PrismaClient) => {
+  const bomRepo = createBomRepository(prisma);
+
+  return {
+    /** 仪表盘汇总 */
+    async getDashboard() {
+      const [
+        pendingOrders,
+        producingOrders,
+        todayReceipts,
+        lowStock,
+        overStock,
+        activeBoms,
+      ] = await Promise.all([
+        prisma.order.count({ where: { status: "PENDING" } }),
+        prisma.order.count({ where: { status: "PRODUCING" } }),
+        prisma.orderReceipt.aggregate({
+          where: {
+            createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+          },
+          _sum: { quantity: true },
+        }),
+        prisma.inventory.count({ where: { quantity: { lte: 10 } } }),
+        prisma.inventory.count({ where: { quantity: { gte: 1000 } } }),
+        prisma.bom.count({ where: { status: "PUBLISHED" } }),
+      ]);
+
+      return {
+        pendingOrders,
+        producingOrders,
+        todayInbound: todayReceipts._sum.quantity
+          ? String(todayReceipts._sum.quantity)
+          : "0",
+        lowStock,
+        overStock,
+        activeBoms,
+      };
+    },
+
+    /** 订单概览 */
+    async getOrderSummary() {
+      const result = await prisma.order.groupBy({
+        by: ["status"],
+        _count: { id: true },
+        _sum: { totalAmount: true },
+        orderBy: { status: "asc" },
+      });
+
+      const total = result.reduce((s: number, r: any) => s + r._count.id, 0);
+
+      return {
+        total,
+        items: result.map((r: any) => ({
+          status: r.status,
+          count: r._count.id,
+          amount: r._sum.totalAmount ? String(r._sum.totalAmount) : "0",
+          percentage:
+            total > 0 ? ((r._count.id / total) * 100).toFixed(1) : "0",
+        })),
+      };
+    },
+
+    /** 库存概览 */
+    async getInventorySummary() {
+      const result = await prisma.inventory.aggregate({
+        _count: { id: true },
+        _sum: { quantity: true },
+        _avg: { quantity: true },
+        _min: { quantity: true },
+        _max: { quantity: true },
+      });
+
+      return {
+        totalSkus: result._count.id,
+        totalQuantity: result._sum.quantity
+          ? String(result._sum.quantity)
+          : "0",
+        avgQuantity: result._avg.quantity ? String(result._avg.quantity) : "0",
+        minQuantity: result._min.quantity ? String(result._min.quantity) : "0",
+        maxQuantity: result._max.quantity ? String(result._max.quantity) : "0",
+      };
+    },
+
+    /** BOM 概览 */
+    async getBomSummary() {
+      const active = await prisma.bom.count({ where: { status: "PUBLISHED" } });
+      const total = await prisma.bom.count();
+      const byStatus = await prisma.bom.groupBy({
+        by: ["status"],
+        _count: { id: true },
+      });
+
+      return {
+        total,
+        active,
+        byStatus: byStatus.map((b: any) => ({
+          status: b.status,
+          count: b._count.id,
+        })),
+      };
+    },
+
+    async getShortage() {
+      const producingOrders = await prisma.order.findMany({
+        where: { status: { in: ["APPROVED", "PRODUCING"] } },
+        include: {
+          items: {
+            include: {
+              product: {
+                select: {
+                  id: true,
+                  name: true,
+                  code: true,
+                  category: true,
+                  unit: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (producingOrders.length === 0) {
+        return { shortages: [], totalOrders: 0 };
+      }
+
+      const expandBom = async (
+        productId: string,
+        productName: string,
+        parentQuantity: IDecimal,
+        depth: number = 0,
+      ): Promise<Map<string, { productName: string; quantity: IDecimal }>> => {
+        const result = new Map<
+          string,
+          { productName: string; quantity: IDecimal }
+        >();
+        if (depth >= 10) return result;
+
+        const bom = await bomRepo.findActiveByProductId(productId);
+        if (!bom || bom.items.length === 0) {
+          result.set(productId, { productName, quantity: parentQuantity });
+          return result;
+        }
+
+        for (const bomItem of bom.items) {
+          const childQty = createDecimal(String(bomItem.quantity)).times(
+            parentQuantity,
+          );
+          const childResult = await expandBom(
+            bomItem.materialId,
+            bomItem.materialName,
+            childQty,
+            depth + 1,
+          );
+          for (const [matId, matData] of childResult) {
+            const existing = result.get(matId);
+            if (existing) {
+              existing.quantity = existing.quantity.plus(matData.quantity);
+            } else {
+              result.set(matId, {
+                productName: matData.productName,
+                quantity: matData.quantity,
+              });
+            }
+          }
+        }
+        return result;
+      };
+
+      const materialMap = new Map<
+        string,
+        {
+          productName: string;
+          productCode: string;
+          unit: string;
+          orders: Array<{ orderCode: string; demand: string; source: string }>;
+        }
+      >();
+
+      for (const order of producingOrders) {
+        for (const item of order.items) {
+          const totalQty = createDecimal(String(item.quantity));
+          const fulfilled = createDecimal(String(item.fulfilledQuantity));
+          const remaining = totalQty.minus(fulfilled);
+          if (remaining.lte(0)) continue;
+
+          const expandedMaterials = await expandBom(
+            item.productId,
+            item.productName,
+            remaining,
+            0,
+          );
+
+          for (const [materialId, matData] of expandedMaterials) {
+            const existing = materialMap.get(materialId);
+            const entry = {
+              orderCode: order.orderCode,
+              demand: matData.quantity.toString(),
+              source: `${item.productName}(BOM)`,
+            };
+            if (existing) {
+              existing.orders.push(entry);
+            } else {
+              const material = await prisma.product.findUnique({
+                where: { id: materialId },
+                select: { name: true, code: true, unit: true },
+              });
+              materialMap.set(materialId, {
+                productName: material?.name || matData.productName,
+                productCode: material?.code || materialId,
+                unit: material?.unit || "",
+                orders: [entry],
+              });
+            }
+          }
+        }
+      }
+
+      const allMaterialIds = [...materialMap.keys()];
+      const inventories = await prisma.inventory.findMany({
+        where: { productId: { in: allMaterialIds } },
+      });
+      const invMap = new Map(inventories.map((i) => [i.productId, i]));
+
+      const shortages: Array<{
+        productId: string;
+        productCode: string;
+        productName: string;
+        unit: string;
+        demand: string;
+        available: string;
+        realShortage: string;
+        orderCount: number;
+      }> = [];
+
+      for (const [productId, data] of materialMap) {
+        const totalDemand = data.orders.reduce(
+          (s, o) => s.plus(createDecimal(o.demand)),
+          createDecimal(0),
+        );
+        const inv = invMap.get(productId);
+        const invQty = inv
+          ? createDecimal(String(inv.quantity))
+          : createDecimal(0);
+        const realShortage = totalDemand.minus(invQty);
+
+        if (realShortage.gt(0)) {
+          shortages.push({
+            productId,
+            productCode: data.productCode,
+            productName: data.productName,
+            unit: data.unit || "",
+            demand: totalDemand.toString(),
+            available: invQty.toString(),
+            realShortage: realShortage.toString(),
+            orderCount: data.orders.length,
+          });
+        }
+      }
+
+      return {
+        shortages: shortages.sort((a, b) => {
+          const diff = createDecimal(b.realShortage).minus(
+            createDecimal(a.realShortage),
+          );
+          return diff.gt(0) ? 1 : diff.lt(0) ? -1 : 0;
+        }),
+        totalOrders: producingOrders.length,
+      };
+    },
+
+    async getShortageDetail(productId: string) {
+      const producingOrders = await prisma.order.findMany({
+        where: { status: { in: ["APPROVED", "PRODUCING"] } },
+        include: {
+          items: {
+            select: {
+              productId: true,
+              productName: true,
+              quantity: true,
+              fulfilledQuantity: true,
+            },
+          },
+        },
+      });
+
+      const details: Array<{
+        orderCode: string;
+        productName: string;
+        demand: string;
+        source: string;
+      }> = [];
+
+      const findInBom = async (
+        targetProductId: string,
+        currentProductId: string,
+        parentQuantity: IDecimal,
+        depth: number = 0,
+      ): Promise<IDecimal> => {
+        if (depth >= 10) return createDecimal(0);
+        if (currentProductId === targetProductId) return parentQuantity;
+
+        const bom = await bomRepo.findActiveByProductId(currentProductId);
+        if (!bom || bom.items.length === 0) return createDecimal(0);
+
+        let totalDemand = createDecimal(0);
+        for (const bomItem of bom.items) {
+          const childQty = createDecimal(String(bomItem.quantity)).times(
+            parentQuantity,
+          );
+          totalDemand = totalDemand.plus(
+            await findInBom(
+              targetProductId,
+              bomItem.materialId,
+              childQty,
+              depth + 1,
+            ),
+          );
+        }
+        return totalDemand;
+      };
+
+      for (const order of producingOrders) {
+        for (const item of order.items) {
+          const totalQty = createDecimal(String(item.quantity));
+          const fulfilled = createDecimal(String(item.fulfilledQuantity));
+          const remaining = totalQty.minus(fulfilled);
+          if (remaining.lte(0)) continue;
+
+          if (item.productId === productId) {
+            details.push({
+              orderCode: order.orderCode,
+              productName: item.productName,
+              demand: remaining.toString(),
+              source: "直接订单",
+            });
+            continue;
+          }
+
+          const bomDemand = await findInBom(
+            productId,
+            item.productId,
+            remaining,
+            0,
+          );
+
+          if (bomDemand.gt(0)) {
+            details.push({
+              orderCode: order.orderCode,
+              productName: item.productName,
+              demand: bomDemand.toString(),
+              source: "BOM 展开",
+            });
+          }
+        }
+      }
+
+      return details;
+    },
+    /** 员工综合工资汇总（工序报工 + 杂费报工） */
+    async getWageSummary(params: {
+      startDate?: string;
+      endDate?: string;
+      orderId?: string;
+      workerId?: string;
+      groupBy?: string;
+    }) {
+      const where: any = {};
+
+      if (params.orderId) where.orderId = params.orderId;
+      if (params.workerId) where.workerId = params.workerId;
+      if (params.startDate || params.endDate) {
+        where.createdAt = {};
+        if (params.startDate) where.createdAt.gte = new Date(params.startDate);
+        if (params.endDate)
+          where.createdAt.lte = new Date(
+            new Date(params.endDate).setHours(23, 59, 59, 999),
+          );
+      }
+
+      // 并行查询两个数据源
+      const [productionLogs, miscCosts] = await Promise.all([
+        prisma.productionLog.findMany({
+          where,
+          include: {
+            worker: { select: { id: true, code: true, name: true } },
+            order: { select: { id: true, orderCode: true } },
+            product: { select: { id: true, code: true, name: true } },
+          },
+          orderBy: { createdAt: "asc" },
+        }),
+        prisma.orderMiscCost.findMany({
+          where: { ...where, status: "ACTIVE" },
+          include: {
+            worker: { select: { id: true, code: true, name: true } },
+            order: { select: { id: true, orderCode: true } },
+          },
+          orderBy: { createdAt: "asc" },
+        }),
+      ]);
+
+      // 合并为统一格式
+      const records: any[] = [];
+
+      for (const log of productionLogs) {
+        records.push({
+          type: "PRODUCTION",
+          id: log.id,
+          date: log.createdAt.toISOString().split("T")[0],
+          description: log.processName,
+          amount: Number(log.laborCost || 0),
+          orderCode: log.order?.orderCode || null,
+          workerId: log.workerId,
+          workerName: log.worker?.name || "未指定",
+          workerCode: log.worker?.code || null,
+          orderId: log.orderId,
+          productId: log.product?.id || null,
+          productCode: log.product?.code || null,
+          productName: log.product?.name || null,
+        });
+      }
+
+      for (const cost of miscCosts) {
+        records.push({
+          type: "MISC",
+          id: cost.id,
+          date: cost.createdAt.toISOString().split("T")[0],
+          description: cost.description,
+          amount: Number(cost.amount),
+          orderCode: cost.order?.orderCode || null,
+          workerId: cost.workerId,
+          workerName: cost.worker?.name || cost.workerName || "未指定",
+          workerCode: cost.worker?.code || null,
+          orderId: cost.orderId,
+        });
+      }
+
+      // 分组聚合
+      const groupBy = params.groupBy || "worker";
+      const groups = new Map<string, any>();
+
+      for (const record of records) {
+        let key = "";
+        if (groupBy === "worker") {
+          key = record.workerId || record.workerName;
+        } else if (groupBy === "order") {
+          key = record.orderId || record.orderCode || "unbound";
+        } else if (groupBy === "worker+order") {
+          key = `${record.workerId || record.workerName}::${record.orderId || record.orderCode || "unbound"}`;
+        } else {
+          key = "all";
+        }
+
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            workerId: record.workerId,
+            workerName: record.workerName,
+            workerCode: record.workerCode,
+            orderId: record.orderId,
+            orderCode: record.orderCode,
+            productionTotal: 0,
+            miscTotal: 0,
+            totalAmount: 0,
+            productionCount: 0,
+            miscCount: 0,
+            records: [],
+          });
+        }
+
+        const group = groups.get(key)!;
+        if (record.type === "PRODUCTION") {
+          group.productionTotal += record.amount;
+          group.productionCount += 1;
+        } else {
+          group.miscTotal += record.amount;
+          group.miscCount += 1;
+        }
+        group.totalAmount += record.amount;
+        group.records.push(record);
+      }
+
+      // 按 totalAmount 降序
+      const data = [...groups.values()].sort(
+        (a, b) => b.totalAmount - a.totalAmount,
+      );
+
+      const summary = {
+        totalAmount: records.reduce((s, r) => s + r.amount, 0),
+        productionTotal: records
+          .filter((r) => r.type === "PRODUCTION")
+          .reduce((s, r) => s + r.amount, 0),
+        miscTotal: records
+          .filter((r) => r.type === "MISC")
+          .reduce((s, r) => s + r.amount, 0),
+        totalCount: records.length,
+        groupCount: data.length,
+      };
+
+      return { data, summary };
+    },
+  };
+};
+</file>
+
+<file path="server/services/audit.service.ts">
+// server/services/audit.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createAuditRepository } from "~~/server/repositories/postgres/audit.repository";
+
+export const createAuditService = (prisma: PrismaClient) => {
+  // 创建 Repository 实例
+  const auditRepo = createAuditRepository(prisma);
+
+  return {
+    /**
+     * 记录操作日志
+     * @param operatorId 操作人 ID
+     * @param entity 实体类型：User/Product/Order/Bom 等
+     * @param entityId 实体 ID
+     * @param action 操作：CREATE/UPDATE/DELETE/STATUS_CHANGE/APPROVE/OBSOLETE
+     * @param detail 变更详情：{ field?, oldValue?, newValue?, remark? }
+     */
+    async log(
+      operatorId: string,
+      entity: string,
+      entityId: string,
+      action: string,
+      detail?: {
+        field?: string;
+        oldValue?: string;
+        newValue?: string;
+        remark?: string;
+      },
+    ) {
+      // 调用 Repository 的 createLog 方法（审计日志通常独立于业务事务，不传 tx）
+      return auditRepo.createLog({
+        operatorId,
+        entity,
+        entityId,
+        action,
+        field: detail?.field,
+        oldValue: detail?.oldValue,
+        newValue: detail?.newValue,
+        remark: detail?.remark,
+      });
+    },
+
+    /**
+     * 查询操作日志（含补全信息）
+     */
+    async getList(options: {
+      page: number;
+      limit: number;
+      entity?: string;
+      entityId?: string;
+      operatorId?: string;
+      action?: string;
+      startDate?: string;
+      endDate?: string;
+    }) {
+      // 1. 使用 Repository 进行分页查询
+      const { data, total, page, limit, totalPages } = await auditRepo.findMany(
+        {
+          page: options.page,
+          limit: options.limit,
+          entity: options.entity,
+          entityId: options.entityId,
+          operatorId: options.operatorId,
+          action: options.action,
+          startDate: options.startDate,
+          endDate: options.endDate,
+          orderBy: { createdAt: "desc" }, // 默认排序
+        },
+      );
+
+      // 若没有数据，直接返回（避免后续补全查询）
+      if (data.length === 0) {
+        return {
+          data: [],
+          page,
+          limit,
+          total,
+          totalPages,
+        };
+      }
+
+      // 2. 补全操作人信息（工号、姓名）
+      const userIds = [...new Set(data.map((l) => l.operatorId))];
+      const users = await prisma.user.findMany({
+        where: { id: { in: userIds } },
+        select: { id: true, badgeCode: true, name: true },
+      });
+      const userMap = new Map(users.map((u) => [u.id, u]));
+
+      // 3. 按 entity 类型分组收集 entityId，批量获取业务编码
+      const entityGroups: Record<string, string[]> = {};
+      for (const log of data) {
+        if (!entityGroups[log.entity]) {
+          entityGroups[log.entity] = [];
+        }
+        entityGroups[log.entity]!.push(log.entityId);
+      }
+
+      const entityCodeMap = new Map<string, string>();
+      const promises: Promise<void>[] = [];
+
+      for (const [entity, ids] of Object.entries(entityGroups)) {
+        const uniqueIds = [...new Set(ids)];
+        switch (entity) {
+          case "User":
+            promises.push(
+              prisma.user
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, badgeCode: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`User:${r.id}`, r.badgeCode);
+                }),
+            );
+            break;
+          case "Product":
+            promises.push(
+              prisma.product
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, code: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`Product:${r.id}`, r.code);
+                }),
+            );
+            break;
+          case "Order":
+            promises.push(
+              prisma.order
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, orderCode: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`Order:${r.id}`, r.orderCode);
+                }),
+            );
+            break;
+          case "Bom":
+            promises.push(
+              prisma.bom
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, bomCode: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`Bom:${r.id}`, r.bomCode);
+                }),
+            );
+            break;
+          case "Customer":
+            promises.push(
+              prisma.customer
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, code: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`Customer:${r.id}`, r.code);
+                }),
+            );
+            break;
+          case "Inventory":
+            promises.push(
+              prisma.inventory
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, product: { select: { code: true } } },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`Inventory:${r.id}`, r.product.code);
+                }),
+            );
+          case "Supplier":
+            promises.push(
+              prisma.supplier
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, code: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`Supplier:${r.id}`, r.code);
+                }),
+            );
+            break;
+          case "PurchaseOrder":
+            promises.push(
+              prisma.purchaseOrder
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, orderCode: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`PurchaseOrder:${r.id}`, r.orderCode);
+                }),
+            );
+            break;
+          case "Worker":
+            promises.push(
+              prisma.worker
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, code: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`Worker:${r.id}`, r.code);
+                }),
+            );
+            break;
+          case "Location":
+            promises.push(
+              prisma.location
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, code: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`Location:${r.id}`, r.code);
+                }),
+            );
+            break;
+          case "Process":
+            promises.push(
+              prisma.process
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, name: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`Process:${r.id}`, r.name);
+                }),
+            );
+            break;
+          case "OrderReceipt":
+            promises.push(
+              prisma.orderReceipt
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, receiptCode: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`OrderReceipt:${r.id}`, r.receiptCode);
+                }),
+            );
+            break;
+          case "PurchaseReceipt":
+            promises.push(
+              prisma.purchaseReceipt
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, receiptCode: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`PurchaseReceipt:${r.id}`, r.receiptCode);
+                }),
+            );
+            break;
+          case "ProductionLog":
+            promises.push(
+              prisma.productionLog
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, processName: true, createdAt: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`ProductionLog:${r.id}`, r.processName);
+                }),
+            );
+            break;
+          case "OrderMiscCost":
+            promises.push(
+              prisma.orderMiscCost
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, description: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(`OrderMiscCost:${r.id}`, r.description);
+                }),
+            );
+            break;
+          case "OrderProcessPlan":
+            promises.push(
+              prisma.orderProcessPlan
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, processName: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(
+                      `OrderProcessPlan:${r.id}`,
+                      r.processName,
+                    );
+                }),
+            );
+            break;
+          case "InventoryLog":
+            promises.push(
+              prisma.inventoryLog
+                .findMany({
+                  where: { id: { in: uniqueIds } },
+                  select: { id: true, relatedCode: true, type: true },
+                })
+                .then((rows) => {
+                  for (const r of rows)
+                    entityCodeMap.set(
+                      `InventoryLog:${r.id}`,
+                      r.relatedCode || r.type,
+                    );
+                }),
+            );
+            break;
+          default:
+            break;
+        }
+      }
+      await Promise.all(promises);
+
+      // 4. 组装最终结果
+      const enriched = data.map((log) => ({
+        ...log,
+        operatorBadge: userMap.get(log.operatorId)?.badgeCode || log.operatorId,
+        operatorName: userMap.get(log.operatorId)?.name || "",
+        entityCode:
+          entityCodeMap.get(`${log.entity}:${log.entityId}`) || undefined,
+      }));
+
+      return {
+        data: enriched,
+        page,
+        limit,
+        total,
+        totalPages,
+      };
+    },
+  };
+};
+</file>
+
+<file path="server/services/auth.service.ts">
+// server/services/auth.service.ts
+
+import bcrypt from "bcrypt";
+import crypto from "crypto";
+import { TokenService } from "~~/server/services/token.service";
+import { redis } from "~~/server/infrastructure/redis";
+import { createUserRepository } from "~~/server/repositories/postgres/user.repository";
+import { accountType, formatAccount } from "~~/shared/utils/validators/account";
+import { loginSchema } from "~~/shared/schemas/user.schema";
+import { createError } from "h3";
+import { RefreshTokenPayload } from "~~/shared/types/tokenType";
+import { PrismaClient } from "~~/prisma/generated/client";
+const hashToken = (token: string): string => {
+  return crypto.createHash("sha256").update(token).digest("hex");
+};
+export const createAuthService = (prisma: PrismaClient) => {
+  const userRepo = createUserRepository(prisma);
+  const tokenService = new TokenService();
+
+  return {
+    async login(rawAccount: string, rawPassword: string, event?: any) {
+      // 1. 校验登录请求参数是否合法
+      const { account, password } = loginSchema.parse({
+        account: rawAccount,
+        password: rawPassword,
+      });
+      // 2. 判断账号是邮箱还是手机号
+      const type = accountType(account);
+      if (type === "either") {
+        throw createError({
+          statusCode: 400,
+          message: "请输入有效的邮箱或手机号",
+        });
+      }
+
+      // 3. 规范化账号
+      const formatted = formatAccount(account, type);
+
+      // 4. 根据账号类型查询用户
+      const user =
+        type === "email"
+          ? await userRepo.findByEmail(formatted)
+          : await userRepo.findByPhone(formatted);
+
+      // 5. IP 频率限制
+      if (event) {
+        const ip = getRequestIP(event);
+        if (ip) {
+          const ipKey = `login:ip:${ip}`;
+          const ipCount = (await redis["security"].get(ipKey)) || 0;
+          if (ipCount >= 10) {
+            throw createError({
+              statusCode: 429,
+              message: "请求过于频繁，请15分钟后再试",
+            });
+          }
+        }
+      }
+
+      if (!user) {
+        // 账号不存在也计入 IP 限制，防止暴力枚举
+        if (event) {
+          const ip = getRequestIP(event);
+          if (ip) {
+            const ipKey = `login:ip:${ip}`;
+            const ipCount = (await redis["security"].get(ipKey)) || 0;
+            await redis["security"].set(ipKey, ipCount + 1, 15 * 60);
+          }
+        }
+        throw createError({ statusCode: 400, message: "账号未注册" });
+      }
+
+      // 6. 检查账号是否被锁定
+      const lockKey = `login:lock:${user.id}`;
+      if (await redis["security"].get(lockKey)) {
+        throw createError({
+          statusCode: 403,
+          message: "账号已被锁定，请30分钟后再试",
+        });
+      }
+
+      // 7. 检查账号状态是否合法
+      if (user.status === "INACTIVE") {
+        throw createError({ statusCode: 403, message: "账号已被禁用" });
+      }
+
+      // 8. 验证密码是否正确
+      const isValid = await bcrypt.compare(password, user.password);
+      if (!isValid) {
+        // 登录失败计数
+        const failKey = `login:fail:${user.id}`;
+        const failCount = (await redis["security"].get(failKey)) || 0;
+        const newCount = failCount + 1;
+        await redis["security"].set(failKey, newCount, 15 * 60);
+
+        // IP 计数增加
+        if (event) {
+          const ip = getRequestIP(event);
+          if (ip) {
+            const ipKey = `login:ip:${ip}`;
+            const ipCount = (await redis["security"].get(ipKey)) || 0;
+            await redis["security"].set(ipKey, ipCount + 1, 15 * 60);
+          }
+        }
+
+        if (newCount >= 5) {
+          // 锁定账号 30 分钟
+          await redis["security"].set(`login:lock:${user.id}`, 1, 30 * 60);
+          throw createError({
+            statusCode: 403,
+            message: "账号已被锁定30分钟，请稍后再试",
+          });
+        }
+
+        throw createError({
+          statusCode: 401,
+          message: `密码不正确，还剩${5 - newCount}次尝试机会`,
+        });
+      }
+
+      // 9. 登录成功，清除锁定和失败记录
+      await redis["security"].del(`login:fail:${user.id}`);
+      await redis["security"].del(`login:lock:${user.id}`);
+      if (event) {
+        const ip = getRequestIP(event);
+        if (ip) {
+          await redis["security"].del(`login:ip:${ip}`);
+        }
+      }
+
+      // 10. 生成 token
+      // 10. 生成 token
+      const { accessToken, refreshToken, sessionId } =
+        tokenService.issueTokenPair({
+          userId: user.id,
+          role: user.role ?? "staff",
+        });
+
+      // 生成 CSRF token
+      const csrfToken = crypto.randomUUID();
+      const refreshTokenHash = hashToken(refreshToken);
+
+      // 11. 写入 Redis session（包含 csrfToken 和 refreshTokenHash）
+      await redis["session"].set(
+        sessionId,
+        {
+          userId: user.id,
+          role: user.role,
+          csrfToken,
+          refreshTokenHash,
+        },
+        7 * 24 * 3600,
+      );
+
+      // 12. 异步更新最后登录时间
+      userRepo.updateLastLogin(user.id).catch((err: any) => {
+        console.error("更新最后登录时间失败:", err);
+      });
+
+      return {
+        accessToken,
+        refreshToken,
+        csrfToken,
+        sessionId,
+        user: {
+          id: user.id,
+          badgeCode: user.badgeCode,
+          name: user.name,
+          role: user.role,
+          department: user.department,
+        },
+      };
+    },
+
+    async refreshByRefreshToken(refreshToken: string, csrfToken: string) {
+      let payload: RefreshTokenPayload;
+      try {
+        payload = tokenService.verifyRefreshToken(refreshToken);
+      } catch {
+        throw createError({ statusCode: 401, message: "Token 已过期" });
+      }
+
+      const jti = payload.jti;
+      const sessionData = await redis["session"].get(jti);
+      const {
+        userId,
+        role,
+        csrfToken: storedCsrf,
+        refreshTokenHash,
+      } = sessionData || {};
+      if (!userId)
+        throw createError({ statusCode: 401, message: "会话数据异常" });
+
+      // CSRF 校验
+      if (csrfToken && storedCsrf && csrfToken !== storedCsrf) {
+        // CSRF token 不匹配，可能被攻击
+        await redis["session"].del(jti);
+        throw createError({
+          statusCode: 401,
+          message: "CSRF 校验失败，请重新登录",
+        });
+      }
+
+      // Refresh Token 轮换校验
+      const submittedHash = hashToken(refreshToken);
+      if (refreshTokenHash && refreshTokenHash !== submittedHash) {
+        // 旧 token 被重用，作废整个 session
+        await redis["session"].del(jti);
+        throw createError({
+          statusCode: 401,
+          message: "Token 已失效，请重新登录",
+        });
+      }
+
+      // 签发新 token
+      const tokens = tokenService.issueTokenPair({
+        userId,
+        role,
+        sessionId: jti,
+      });
+
+      // 生成新的 CSRF token 和 refresh token hash
+      const newCsrfToken = crypto.randomUUID();
+      const newRefreshHash = hashToken(tokens.refreshToken);
+
+      await redis["session"].set(
+        jti,
+        {
+          userId,
+          role,
+          csrfToken: newCsrfToken,
+          refreshTokenHash: newRefreshHash,
+        },
+        7 * 24 * 3600,
+      );
+
+      return {
+        ...tokens,
+        csrfToken: newCsrfToken,
+      };
+    },
+  };
+};
+//已弃用,改为无状态的token,仅保留会话id-用户id实现多设备管理
+// async refresh(accessToken: string, sessionId: string) {
+//   // 1. 解码 access token
+//   let jti: string;
+//   try {
+//     const payload = tokenService.verifyAccessToken(accessToken);
+//     jti = payload.jti;
+//   } catch {
+//     const decoded = tokenService.decodeAccessToken(accessToken);
+//     if (!decoded?.jti) {
+//       throw createError({ statusCode: 401, message: "请重新登录" });
+//     }
+//     jti = decoded.jti;
+//   }
+//   // 2. 校验 sessionId 和 jti 一致
+//   if (jti !== sessionId) {
+//     throw createError({ statusCode: 401, message: "会话不匹配" });
+//   }
+
+//   // 2. 从 Redis 读存储的 refreshToken
+//   const storedRefreshToken = await redis["refreshToken"].get(jti);
+//   if (!storedRefreshToken) {
+//     throw createError({
+//       statusCode: 401,
+//       message: "会话已过期，请重新登录",
+//     });
+//   }
+
+//   // 4. 验 refreshToken 签名
+//   let payload: RefreshTokenPayload;
+//   try {
+//     payload = tokenService.verifyRefreshToken(storedRefreshToken);
+//   } catch {
+//     await redis["refreshToken"].del(jti);
+//     throw createError({
+//       statusCode: 401,
+//       message: "Token 已过期，请重新登录",
+//     });
+//   }
+
+//   // 5. 删除旧 refreshToken，防止重用
+//   await redis["refreshToken"].del(jti);
+
+//   // 6. 从 Redis session 拿用户信息
+//   const sessionData = await redis["session"].get(jti);
+//   const { userId, role } = sessionData || {};
+//   if (!userId) {
+//     throw createError({ statusCode: 401, message: "会话数据异常" });
+//   }
+
+//   // 7. 签发新双 token（sessionId 不变）
+//   const tokens = tokenService.issueTokenPair({
+//     userId,
+//     role,
+//     sessionId: jti,
+//   });
+
+//   // 8. 写入 Redis
+//   await redis["refreshToken"].set(jti, tokens.refreshToken, 7 * 24 * 3600);
+//   await redis["session"].set(jti, { userId, role }, 7 * 24 * 3600);
+
+//   return { success: true, tokens };
+// },
+//已废弃,同上
+// async refreshBySessionId(sessionId: string) {
+//   const storedRefreshToken = await redis["refreshToken"].get(sessionId);
+//   if (!storedRefreshToken) {
+//     throw createError({ statusCode: 401, message: "会话已过期" });
+//   }
+
+//   let payload: RefreshTokenPayload;
+//   try {
+//     payload = tokenService.verifyRefreshToken(storedRefreshToken);
+//   } catch {
+//     await redis["refreshToken"].del(sessionId);
+//     throw createError({ statusCode: 401, message: "Token 已过期" });
+//   }
+
+//   await redis["refreshToken"].del(sessionId);
+
+//   const sessionData = await redis["session"].get(sessionId);
+//   const { userId, role } = sessionData || {};
+//   if (!userId)
+//     throw createError({ statusCode: 401, message: "会话数据异常" });
+
+//   const tokens = tokenService.issueTokenPair({ userId, role, sessionId });
+//   await redis["refreshToken"].set(
+//     sessionId,
+//     tokens.refreshToken,
+//     7 * 24 * 3600,
+//   );
+//   await redis["session"].set(sessionId, { userId, role }, 7 * 24 * 3600);
+//   return tokens;
+// },
+</file>
+
+<file path="server/services/bom.service.ts">
+// server/services/bom.service.ts
+import { createBomRepository } from "~~/server/repositories/postgres/bom.repository";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import {
+  cloneBomSchema,
+  createBomSchema,
+  obsoleteBomSchema,
+  publishBomSchema,
+  updateBomSchema,
+} from "~~/shared/schemas/api/bom.schema";
+import type { BomItem, PrismaClient } from "~~/prisma/generated/client";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import type { RequestContext } from "~~/shared/types/request";
+import { createError } from "h3";
+import {
+  createDecimal,
+  toPrismaDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+import { runInTransaction } from "~~/server/utils/transaction";
+import { createOrderItemService } from "./order-item.service";
+
+export const createBomService = (prisma: PrismaClient) => {
+  const bomRepo = createBomRepository(prisma);
+  const seqService = createSequenceService(prisma);
+
+  return {
+    // ==================== 读操作 ====================
+    async getList(
+      filter: Record<string, any>,
+      options: {
+        page: number;
+        limit: number;
+        sortField?: string;
+        sortDir?: string;
+        showAll?: string;
+      },
+    ) {
+      const where: any = { ...filter };
+
+      const allData = await bomRepo.findAll(where, {
+        orderBy: [{ bomCode: "asc" }, { version: "desc" }],
+        include: {
+          product: { select: { name: true, code: true } },
+          _count: { select: { items: true } },
+        },
+      });
+
+      const isShowAll = options.showAll === "true";
+      const seen = new Map<string, any>();
+
+      for (const bom of allData) {
+        if (isShowAll) {
+          seen.set(`${bom.bomCode}_${bom.version}`, bom);
+        } else if (!seen.has(bom.bomCode)) {
+          seen.set(bom.bomCode, bom);
+        } else {
+          const existing = seen.get(bom.bomCode)!;
+          if (existing.status === "OBSOLETED" && bom.status !== "OBSOLETED") {
+            seen.set(bom.bomCode, bom);
+          }
+        }
+      }
+
+      const deduped = Array.from(seen.values());
+      const total = deduped.length;
+      const paged = deduped.slice(
+        (options.page - 1) * options.limit,
+        options.page * options.limit,
+      );
+
+      return {
+        data: paged,
+        total,
+        page: options.page,
+        limit: options.limit,
+        totalPages: Math.ceil(total / options.limit),
+      };
+    },
+    /** 查询 BOM 直接子物料 ID（领料校验专用） */
+    async findDirectMaterialIdsByBomId(bomId: string, tx?: TxContext) {
+      return bomRepo.findDirectMaterialIdsByBomId(bomId, tx);
+    },
+    async getById(id: string) {
+      const bom = await bomRepo.findById(id, {
+        approver: { select: { badgeCode: true, name: true } },
+        product: { select: { code: true, name: true } },
+        items: {
+          include: {
+            material: {
+              select: { code: true, name: true, spec: true, unit: true },
+            },
+          },
+        },
+      });
+      if (!bom) throw createError({ statusCode: 404, message: "BOM 不存在" });
+      return bom;
+    },
+
+    async findActiveByProductId(productId: string, tx?: TxContext) {
+      return bomRepo.findActiveByProductId(productId, tx);
+    },
+    //展开当前产品的bom(如果存在)
+    async expandBomDirectMaterials(bomId: string, quantity: number) {
+      const bom = await prisma.bom.findUnique({
+        where: { id: bomId },
+        include: {
+          items: {
+            include: {
+              material: {
+                select: {
+                  id: true,
+                  code: true,
+                  name: true,
+                  unit: true,
+                  spec: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      if (!bom) return [];
+
+      return bom.items.map((item) => ({
+        materialId: item.materialId,
+        materialName: item.material?.name || item.materialName,
+        materialCode: item.material?.code || "",
+        unit: item.unit || item.material?.unit || "",
+        spec: item.material?.spec || "",
+        demand: Number(item.quantity) * quantity,
+      }));
+    },
+
+    // ==================== 写操作 ====================
+    async create(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = createBomSchema.parse(rawdata);
+      const bomCode = await seqService.getFormattedBomCode();
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const product = await txCtx.prisma.product.findUnique({
+          where: { id: data.productId },
+          select: { name: true },
+        });
+        if (!product)
+          throw createError({ statusCode: 400, message: "产品不存在" });
+
+        const existing = await bomRepo.findActiveByProductId(
+          data.productId,
+          txCtx,
+        );
+        if (existing) {
+          throw createError({
+            statusCode: 400,
+            message: "该产品已有激活 BOM，请使用更新接口",
+          });
+        }
+
+        return bomRepo.createWithItems(
+          {
+            bomCode,
+            productId: data.productId,
+            createdById: ctx.operatorId,
+            items: data.items.map((item) => ({
+              materialId: item.materialId!,
+              materialName: item.materialName,
+              quantity: toPrismaDecimal(createDecimal(item.quantity)),
+              unit: item.unit || "pcs",
+              scrapRate:
+                item.scrapRate !== undefined
+                  ? toPrismaDecimal(createDecimal(item.scrapRate))
+                  : undefined,
+            })),
+          },
+          txCtx,
+        );
+      });
+    },
+
+    async update(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = updateBomSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const old = await bomRepo.findById(data.id, { items: true }, txCtx);
+        if (!old) throw createError({ statusCode: 404, message: "BOM 不存在" });
+        if (old.status === "OBSOLETED") {
+          throw createError({
+            statusCode: 400,
+            message: "已废弃的 BOM 不可修改",
+          });
+        }
+
+        const mapItems = (items: typeof data.items) =>
+          items.map((item) => ({
+            materialId: item.materialId!,
+            materialName: item.materialName,
+            quantity: toPrismaDecimal(createDecimal(item.quantity)),
+            unit: item.unit || "pcs",
+            scrapRate:
+              item.scrapRate !== undefined
+                ? toPrismaDecimal(createDecimal(item.scrapRate))
+                : undefined,
+          }));
+
+        if (old.status === "DRAFT") {
+          return bomRepo.replaceItems(data.id, mapItems(data.items), txCtx);
+        }
+
+        // PUBLISHED → 废弃旧版 + 创建新版
+        await bomRepo.obsoleteById(data.id, txCtx);
+        return bomRepo.createWithItems(
+          {
+            bomCode: old.bomCode,
+            productId: old.productId,
+            version: old.version + 1,
+            createdById: ctx.operatorId,
+            bomType: old.bomType,
+            orderId: old.orderId,
+            items: mapItems(data.items),
+          },
+          txCtx,
+        );
+      });
+    },
+
+    async publish(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = publishBomSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const bom = await bomRepo.findById(data.id, undefined, txCtx);
+        if (!bom) throw createError({ statusCode: 404, message: "BOM 不存在" });
+        if (bom.status !== "DRAFT") {
+          throw createError({
+            statusCode: 400,
+            message: "只能发布草稿状态的 BOM",
+          });
+        }
+
+        return bomRepo.update(
+          { id: data.id },
+          {
+            status: "PUBLISHED",
+            approvedById: ctx.operatorId,
+            approvedAt: new Date(),
+          },
+          txCtx,
+        );
+      });
+    },
+
+    async obsolete(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = obsoleteBomSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const bom = await bomRepo.findById(data.id, undefined, txCtx);
+        if (!bom) throw createError({ statusCode: 404, message: "BOM 不存在" });
+
+        return bomRepo.obsoleteById(data.id, txCtx);
+      });
+    },
+
+    async cloneBom(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const { baseBomId, ...overrides } = cloneBomSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const baseBom = await bomRepo.findById(
+          baseBomId,
+
+          { items: true },
+
+          txCtx,
+        );
+        if (!baseBom)
+          throw createError({ statusCode: 404, message: "基础 BOM 不存在" });
+
+        return bomRepo.createWithItems(
+          {
+            bomCode: overrides.bomCode,
+            productId: overrides.productId,
+            createdById: ctx.operatorId,
+            bomType: overrides.bomType || "SAMPLE",
+            orderId: overrides.orderId,
+            items: baseBom.items.map((item: BomItem) => ({
+              materialId: item.materialId,
+              materialName: item.materialName,
+              quantity: String(item.quantity),
+              unit: item.unit,
+              scrapRate:
+                item.scrapRate !== null && item.scrapRate !== undefined
+                  ? String(item.scrapRate)
+                  : undefined,
+            })),
+          },
+          txCtx,
+        );
+      });
+    } /**
+     * 锁定 BOM 快照到订单明细（审批/打样完成时调用）
+     * orderItemRepo 需要通过 prisma 透传，这里直接调 txCtx.prisma
+     */,
+    async snapshotToOrderItems(
+      items: Array<{ id: string; productId: string }>,
+      tx?: TxContext,
+    ) {
+      const orderItemService = createOrderItemService(prisma);
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        for (const item of items) {
+          const publishedBom = await bomRepo.findActiveByProductId(
+            item.productId,
+            txCtx,
+          );
+          if (publishedBom) {
+            await orderItemService.snapshotBom(
+              item.id,
+              publishedBom.id,
+              publishedBom.version,
+              txCtx,
+            );
+          }
+        }
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/cost.service.ts">
+// server/services/cost.service.ts
+import { createCostRepository } from "~~/server/repositories/postgres/cost.repository";
+import type {
+  PrismaClient,
+  CostDirection,
+  CostSourceType,
+} from "~~/prisma/generated/client";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import {
+  createDecimal,
+  toPrismaDecimal,
+  type IDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+import { runInTransaction } from "~~/server/utils/transaction";
+
+export const createCostService = (prisma: PrismaClient) => {
+  const costRepo = createCostRepository(prisma);
+
+  /**
+   * 加权平均成本计算（全程 IDecimal 精确运算）
+   */
+  async function calculateWeightedAverageCost(
+    productId: string,
+    tx?: TxContext,
+  ): Promise<IDecimal> {
+    const entries = await costRepo.getProductInEntries(productId, tx);
+    if (entries.length === 0) return createDecimal(0);
+
+    let totalCost = createDecimal(0);
+    let totalQty = createDecimal(0);
+
+    for (const e of entries) {
+      totalCost = totalCost.plus(e.totalCost);
+      totalQty = totalQty.plus(e.quantity);
+    }
+
+    return totalQty.gt(0) ? totalCost.div(totalQty) : createDecimal(0);
+  }
+
+  return {
+    /** 入库成本记录 */
+    async recordInboundCost(
+      params: {
+        inventoryLogId: string;
+        productId: string;
+        quantity: number | string;
+        unitCost: number | string;
+        direction: CostDirection;
+        sourceType: CostSourceType;
+        remark?: string;
+      },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const qty = createDecimal(params.quantity);
+        const cost = createDecimal(params.unitCost);
+        const totalCost = qty.times(cost);
+
+        return costRepo.createEntry(
+          {
+            inventoryLogId: params.inventoryLogId,
+            productId: params.productId,
+            quantity: toPrismaDecimal(qty),
+            unitCost: toPrismaDecimal(cost),
+            totalCost: toPrismaDecimal(totalCost),
+            direction: params.direction,
+            sourceType: params.sourceType,
+            remark: params.remark,
+          },
+          txCtx,
+        );
+      });
+    },
+
+    /** 出库成本记录（自动计算加权平均单价） */
+    async recordOutboundCost(
+      params: {
+        inventoryLogId: string;
+        productId: string;
+        quantity: number | string;
+        direction: CostDirection;
+        sourceType: CostSourceType;
+        orderId?: string;
+        remark?: string;
+      },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const qty = createDecimal(params.quantity);
+        const unitCost = await calculateWeightedAverageCost(
+          params.productId,
+          txCtx,
+        );
+        const totalCost = qty.times(unitCost);
+
+        return costRepo.createEntry(
+          {
+            inventoryLogId: params.inventoryLogId,
+            productId: params.productId,
+            quantity: toPrismaDecimal(qty),
+            unitCost: toPrismaDecimal(unitCost),
+            totalCost: toPrismaDecimal(totalCost),
+            direction: params.direction,
+            sourceType: params.sourceType,
+            orderId: params.orderId,
+            remark: params.remark,
+          },
+          txCtx,
+        );
+      });
+    },
+
+    /** 订单成本汇总 */
+    async summarizeOrderCost(
+      orderId: string,
+      totalAmount: number | string,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const materialCost = await costRepo.getOrderMaterialCost(
+          orderId,
+          txCtx,
+        );
+
+        const total = createDecimal(totalAmount);
+        const material = createDecimal(String(materialCost));
+        const grossProfit = total.minus(material);
+
+        return costRepo.upsertOrderCostSummary(
+          {
+            orderId,
+            totalAmount: toPrismaDecimal(total),
+            materialCost: toPrismaDecimal(material),
+            grossProfit: toPrismaDecimal(grossProfit),
+          },
+          txCtx,
+        );
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/customer.service.ts">
+// server/services/customer.service.ts
+import { createCustomerRepository } from "~~/server/repositories/postgres/customer.repository";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import {
+  createCustomerSchema,
+  updateCustomerSchema,
+} from "~~/shared/schemas/api/customer.schema";
+import type { PrismaClient } from "~~/prisma/generated/client";
+import type { RequestContext } from "~~/shared/types/request";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import { createError } from "h3";
+import { runInTransaction } from "~~/server/utils/transaction";
+
+export const createCustomerService = (prisma: PrismaClient) => {
+  const repo = createCustomerRepository(prisma);
+  const seqService = createSequenceService(prisma);
+
+  return {
+    // ==================== 读操作 ====================
+
+    async getList(
+      filter: Record<string, any>,
+      options: {
+        page: number;
+        limit: number;
+        sortField?: string;
+        sortDir?: string;
+      },
+    ) {
+      const where: any = { ...filter };
+      const orderBy: any = {};
+      orderBy[options.sortField || "createdAt"] = options.sortDir || "desc";
+
+      return repo.findMany(where, {
+        page: options.page,
+        limit: options.limit,
+        orderBy,
+      });
+    },
+
+    async getById(id: string) {
+      const customer = await repo.findById(id);
+      if (!customer)
+        throw createError({ statusCode: 404, message: "客户不存在" });
+      return customer;
+    },
+
+    // ==================== 写操作 ====================
+
+    async create(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = createCustomerSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const code = await seqService.getFormattedCustomerCode();
+        return repo.create({ ...data, code }, txCtx);
+      });
+    },
+
+    async update(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = updateCustomerSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const old = await repo.findById(data.id, undefined, txCtx);
+        if (!old) throw createError({ statusCode: 404, message: "客户不存在" });
+        return repo.update({ id: data.id }, data, txCtx);
+      });
+    },
+
+    async changeStatus(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = updateCustomerSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const old = await repo.findById(data.id, undefined, txCtx);
+        if (!old) throw createError({ statusCode: 404, message: "客户不存在" });
+        return repo.update({ id: data.id }, { status: data.status }, txCtx);
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/inventory-location.service.ts">
+// server/services/inventory-location.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createInventoryLocationRepository } from "~~/server/repositories/postgres/inventory-location.repository";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import { runInTransaction } from "~~/server/utils/transaction";
+
+export const createInventoryLocationService = (prisma: PrismaClient) => {
+  const repo = createInventoryLocationRepository(prisma);
+
+  return {
+    /** 获取产品在所有库位的库存分布 */
+    async getProductStock(productId: string) {
+      return repo.findByProductId(productId);
+    },
+
+    /** 获取库位中所有产品的库存 */
+    async getByLocationId(locationId: string) {
+      return repo.findByLocationId(locationId);
+    },
+
+    /** 根据产品名称或编码反查库位分布 */
+    async searchByProduct(query: string) {
+      return prisma.inventoryLocation.findMany({
+        where: {
+          product: {
+            OR: [{ code: { contains: query } }, { name: { contains: query } }],
+          },
+        },
+        include: {
+          product: { select: { code: true, name: true } },
+          location: { select: { code: true, name: true, warehouse: true } },
+        },
+        orderBy: { location: { code: "asc" } },
+      });
+    },
+
+    /** 库位入库（upsert） */
+    async addStock(
+      productId: string,
+      locationId: string,
+      quantity: number | string,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.addStock(productId, locationId, quantity, txCtx);
+      });
+    },
+
+    /** 库位出库（乐观锁） */
+    async deductWithLock(
+      productId: string,
+      locationId: string,
+      quantity: number | string,
+      currentVersion: number,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.deductWithLock(
+          productId,
+          locationId,
+          quantity,
+          currentVersion,
+          txCtx,
+        );
+      });
+    },
+
+    /** 查询库位中某产品的库存 */
+    async findFirst(
+      where: { productId: string; locationId: string },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const client = txCtx.prisma ?? prisma;
+        return client.inventoryLocation.findFirst({ where });
+      });
+    },
+
+    /** 按产品统计库位总量 */
+    async sumByProductId(productId: string, tx?: TxContext) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.sumByProductId(productId, txCtx);
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/inventory-log.service.ts">
+// server/services/inventory-log.service.ts
+import type { LogRelatedType, PrismaClient } from "~~/prisma/generated/client";
+import { createInventoryLogRepository } from "~~/server/repositories/postgres/inventory-log.repository";
+import type { TxContext } from "~~/server/infrastructure/tx";
+
+export const createInventoryLogService = (prisma: PrismaClient) => {
+  const repo = createInventoryLogRepository(prisma);
+
+  return {
+    async createLog(
+      data: {
+        productId: string;
+        type: LogRelatedType;
+        quantity: number | string;
+        beforeQty: number | string;
+        afterQty: number | string;
+        relatedCode?: string;
+        remark?: string;
+        operatorId: string;
+        locationId?: string;
+      },
+      tx?: TxContext,
+    ) {
+      return repo.createLog(data, tx);
+    },
+    // inventory-log.service.ts 新增
+    async findFirst(where: any, tx?: TxContext) {
+      const client = tx?.prisma ?? prisma;
+      return client.inventoryLog.findFirst({ where, select: { id: true } });
+    },
+    async getList(params: {
+      page: number;
+      limit: number;
+      keyword?: string;
+      type?: string;
+      startDate?: string;
+      endDate?: string;
+    }) {
+      const result = await repo.findManyWithDetails(params);
+      return result;
+    },
+  };
+};
+</file>
+
+<file path="server/services/location.service.ts">
+// server/services/location.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createLocationRepository } from "~~/server/repositories/postgres/location.repository";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import { runInTransaction } from "~~/server/utils/transaction";
+
+export const createLocationService = (prisma: PrismaClient) => {
+  const repo = createLocationRepository(prisma);
+
+  return {
+    /** 获取库位列表（分页） */
+    async getList(params: {
+      page: number;
+      limit: number;
+      keyword?: string;
+      status?: string;
+    }) {
+      const where: any = {};
+      if (params.keyword) {
+        where.OR = [
+          { code: { contains: params.keyword } },
+          { name: { contains: params.keyword } },
+          { warehouse: { contains: params.keyword } },
+        ];
+      }
+      if (params.status) where.status = params.status;
+
+      return repo.findMany(where, {
+        page: params.page,
+        limit: params.limit,
+        orderBy: { code: "asc" },
+      });
+    },
+
+    /** 获取所有启用的库位（用于下拉选择） */
+    async getAll() {
+      return repo.findAll({ status: "ACTIVE" }, { orderBy: { code: "asc" } });
+    },
+
+    /** 根据 ID 获取库位 */
+    async getById(id: string) {
+      return repo.findById(id);
+    },
+
+    /** 创建库位 */
+    async create(
+      data: { code?: string; name: string; warehouse?: string },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        let code = data.code?.trim();
+        if (!code) {
+          const seqService = createSequenceService(prisma);
+          code = await seqService.getFormattedLocationCode();
+        }
+
+        const existing = await repo.findFirst({ code }, undefined, txCtx);
+        if (existing) {
+          throw createError({ statusCode: 400, message: "库位编码已存在" });
+        }
+
+        return repo.create({ ...data, code }, txCtx);
+      });
+    },
+
+    /** 更新库位 */
+    async update(
+      id: string,
+      data: {
+        code?: string;
+        name?: string;
+        warehouse?: string;
+        status?: "ACTIVE" | "INACTIVE";
+      },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        if (data.code) {
+          const existing = await repo.findFirst(
+            { code: data.code },
+            undefined,
+            txCtx,
+          );
+          if (existing && existing.id !== id) {
+            throw createError({ statusCode: 400, message: "库位编码已存在" });
+          }
+        }
+        return repo.update({ id }, data, txCtx);
+      });
+    },
+
+    /** 停用库位 */
+    async deactivate(id: string, tx?: TxContext) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.update({ id }, { status: "INACTIVE" }, txCtx);
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/order-item.service.ts">
+// server/services/order-item.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createOrderItemRepository } from "~~/server/repositories/postgres/order-item.repository";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+
+export const createOrderItemService = (prisma: PrismaClient) => {
+  const repo = createOrderItemRepository(prisma);
+
+  return {
+    /** 根据 ID 查询（含产品信息） */
+    async findByIdWithProduct(id: string, tx?: TxContext) {
+      return repo.findByIdWithProduct(id, tx);
+    },
+    /** 按订单ID和产品ID查明细 */
+    async findByOrderIdAndProductId(
+      orderId: string,
+      productId: string,
+      tx?: TxContext,
+    ) {
+      const client = tx?.prisma ?? prisma;
+      return client.orderItem.findFirst({
+        where: { orderId, productId },
+        select: {
+          id: true,
+          quantity: true,
+          fulfilledQuantity: true,
+          productId: true,
+        },
+      });
+    },
+    /** 更新 fulfilledQuantity */
+    async incrementFulfilledQty(
+      id: string,
+      amount: number | string,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.updateOrderItem(
+          id,
+          { fulfilledQuantity: { increment: amount } },
+          txCtx,
+        );
+      });
+    },
+    /** 按订单 ID 查询所有已锁定 BOM 的明细 ID（领料校验专用） */
+    async findBomIdsByOrderId(orderId: string, tx?: TxContext) {
+      const client = tx?.prisma ?? prisma;
+      const items = await client.orderItem.findMany({
+        where: { orderId, bomId: { not: null } },
+        select: { id: true, bomId: true },
+      });
+      return items.map((i) => ({ id: i.id, bomId: i.bomId! }));
+    },
+    /** 更新 shippedQuantity */
+    async incrementShippedQty(
+      id: string,
+      amount: number | string,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.updateOrderItem(
+          id,
+          { shippedQuantity: { increment: amount } },
+          txCtx,
+        );
+      });
+    },
+    /** 按订单 ID 查询所有明细 */
+    async findByOrderId(orderId: string, tx?: TxContext) {
+      return repo.findByOrderId(orderId, tx);
+    },
+
+    /** 锁定 BOM 快照 */
+    async snapshotBom(
+      id: string,
+      bomId: string,
+      bomVersion: number,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.updateOrderItem(id, { bomId, bomVersion }, txCtx);
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/order-misc-cost.service.ts">
+// server/services/order-misc-cost.service.ts
+import type { PrismaClient, MiscCostType } from "~~/prisma/generated/client";
+import { createOrderMiscCostRepository } from "~~/server/repositories/postgres/order-misc-cost.repository";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import { createError } from "h3";
+
+export const createOrderMiscCostService = (prisma: PrismaClient) => {
+  const repo = createOrderMiscCostRepository(prisma);
+
+  return {
+    /** 获取订单杂项费用列表（只返回有效记录） */
+    async getByOrderId(orderId: string) {
+      return repo.findByOrderId(orderId);
+    },
+
+    /** 分页查询杂费列表 */
+    async getList(params: {
+      page: number;
+      limit: number;
+      keyword?: string;
+      costType?: string;
+      orderId?: string;
+      workerId?: string;
+      status?: string;
+      startDate?: string;
+      endDate?: string;
+    }) {
+      const where: any = {
+        status: params.status || "ACTIVE",
+      };
+
+      if (params.keyword) {
+        where.OR = [
+          { description: { contains: params.keyword } },
+          { workerName: { contains: params.keyword } },
+          { worker: { name: { contains: params.keyword } } },
+          { order: { orderCode: { contains: params.keyword } } },
+        ];
+      }
+      if (params.costType) where.costType = params.costType;
+      if (params.orderId) where.orderId = params.orderId;
+      if (params.workerId) where.workerId = params.workerId;
+      if (params.startDate || params.endDate) {
+        where.createdAt = {};
+        if (params.startDate) where.createdAt.gte = new Date(params.startDate);
+        if (params.endDate)
+          where.createdAt.lte = new Date(
+            new Date(params.endDate).setHours(23, 59, 59, 999),
+          );
+      }
+
+      return repo.findMany(where, {
+        page: params.page,
+        limit: params.limit,
+      });
+    },
+
+    /** 添加杂项费用 */
+    async addCost(
+      params: {
+        orderId?: string | null;
+        workerId?: string | null;
+        workerName?: string | null;
+        costType: MiscCostType;
+        description: string;
+        amount: number;
+        remark?: string | null;
+        operatorId: string;
+      },
+      tx?: TxContext,
+    ) {
+      if (!params.description?.trim()) {
+        throw createError({ statusCode: 400, message: "请填写费用说明" });
+      }
+      if (!params.amount || params.amount <= 0) {
+        throw createError({ statusCode: 400, message: "金额必须大于 0" });
+      }
+
+      return repo.createCost(params, tx);
+    },
+
+    /** 作废杂项费用 */
+    async voidCost(id: string, tx?: TxContext) {
+      const existing = await repo.findById(id, tx);
+      if (!existing) {
+        throw createError({ statusCode: 404, message: "杂费记录不存在" });
+      }
+      if (existing.status === "VOIDED") {
+        throw createError({ statusCode: 400, message: "该记录已作废" });
+      }
+      return repo.voidCost(id, tx);
+    },
+
+    /** 工资汇总 */
+    async getWageSummary(params: {
+      startDate?: string;
+      endDate?: string;
+      orderId?: string;
+      workerId?: string;
+      groupBy?: string;
+    }) {
+      const where: any = {};
+
+      if (params.orderId) where.orderId = params.orderId;
+      if (params.workerId) where.workerId = params.workerId;
+      if (params.startDate || params.endDate) {
+        where.createdAt = {};
+        if (params.startDate) where.createdAt.gte = new Date(params.startDate);
+        if (params.endDate)
+          where.createdAt.lte = new Date(
+            new Date(params.endDate).setHours(23, 59, 59, 999),
+          );
+      }
+
+      const groupBy = params.groupBy || "worker";
+      const groups = await repo.wageSummary(where, groupBy);
+
+      const summary = {
+        totalAmount: groups.reduce((s, g) => s + g.totalAmount, 0),
+        totalCount: groups.reduce((s, g) => s + g.count, 0),
+        groupCount: groups.length,
+      };
+
+      return { data: groups, summary };
+    },
+  };
+};
+</file>
+
+<file path="server/services/order.service.ts">
+// server/services/order.service.ts
+import { createOrderRepository } from "~~/server/repositories/postgres/order.repository";
+import { createOrderItemRepository } from "~~/server/repositories/postgres/order-item.repository";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import {
+  createOrderSchema,
+  updateOrderSchema,
+  shipOrderSchema,
+  changeOrderStatusSchema,
+} from "~~/shared/schemas/api/order.schema";
+import type { ListQueryParams } from "~~/shared/schemas/common/pagination.schema";
+import type { PrismaClient } from "~~/prisma/generated/client";
+import {
+  createPrismaTxContext,
+  type TxContext,
+} from "~~/server/infrastructure/tx";
+import type { RequestContext } from "~~/shared/types/request";
+import { createError } from "h3";
+import { createCustomerRepository } from "../repositories/postgres/customer.repository";
+import { createProductRepository } from "../repositories/postgres/product.repository";
+import {
+  createDecimal,
+  toPrismaDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+import { runInTransaction } from "~~/server/utils/transaction";
+
+const STATUS_TRANSITIONS: Record<string, Record<string, string[]>> = {
+  STANDARD: {
+    PENDING: ["APPROVED", "CANCELLED"],
+    APPROVED: ["PRODUCING", "READY", "CANCELLED"],
+    PRODUCING: ["READY", "CANCELLED"],
+    READY: ["COMPLETED", "CANCELLED"],
+    COMPLETED: [],
+    CANCELLED: [],
+  },
+  VARIANT: {
+    PENDING: ["APPROVED", "CANCELLED"],
+    APPROVED: ["SAMPLING", "CANCELLED"],
+    SAMPLING: ["SAMPLED", "CANCELLED"],
+    SAMPLED: ["PRODUCING", "READY", "CANCELLED"],
+    PRODUCING: ["READY", "CANCELLED"],
+    READY: ["COMPLETED", "CANCELLED"],
+    COMPLETED: [],
+    CANCELLED: [],
+  },
+  CUSTOM: {
+    PENDING: ["APPROVED", "CANCELLED"],
+    APPROVED: ["SAMPLING", "CANCELLED"],
+    SAMPLING: ["SAMPLED", "CANCELLED"],
+    SAMPLED: ["PRODUCING", "READY", "CANCELLED"],
+    PRODUCING: ["READY", "CANCELLED"],
+    READY: ["COMPLETED", "CANCELLED"],
+    COMPLETED: [],
+    CANCELLED: [],
+  },
+};
+
+export const createOrderService = (prisma: PrismaClient) => {
+  const orderRepo = createOrderRepository(prisma);
+  const orderItemRepo = createOrderItemRepository(prisma);
+  const seqService = createSequenceService(prisma);
+  const customerRepo = createCustomerRepository(prisma);
+  const productRepo = createProductRepository(prisma);
+
+  return {
+    // ==================== 读操作 ====================
+
+    async getOrderList(filter: Record<string, any>, options: ListQueryParams) {
+      const where: any = {};
+
+      // 权限
+      if (filter.createdById) where.createdById = filter.createdById;
+      if (filter.department) where.department = filter.department;
+
+      // 状态
+      if (filter.statuses?.length) where.status = { in: filter.statuses };
+
+      // 关键词
+      if (filter.keyword) {
+        where.OR = [
+          { orderCode: { contains: filter.keyword } },
+          { customer: { name: { contains: filter.keyword } } },
+          { items: { some: { productName: { contains: filter.keyword } } } },
+        ];
+      }
+
+      const orderBy: any = {};
+      orderBy[options.sortField || "createdAt"] = options.sortDir || "desc";
+
+      return orderRepo.findMany(where, {
+        page: options.page,
+        limit: options.limit,
+        orderBy,
+        include: {
+          items: true,
+          customer: { select: { id: true, name: true } },
+          creator: { select: { badgeCode: true, name: true } },
+        },
+      });
+    },
+    async findByOrderCode(orderCode: string, tx?: TxContext) {
+      const client = tx?.prisma ?? prisma;
+      return client.order.findFirst({
+        where: { orderCode },
+        select: { id: true, orderCode: true, status: true },
+      });
+    },
+
+    async getOrderById(id: string) {
+      const order = await orderRepo.findById(id, {
+        items: true,
+        customer: { select: { id: true, name: true, phone: true } },
+        creator: { select: { badgeCode: true, name: true } },
+      });
+
+      if (!order) throw createError({ statusCode: 404, message: "订单不存在" });
+
+      return {
+        ...order,
+        createdByBadge:
+          (order as any).createdBy?.badgeCode || order.createdById,
+        createdByName: (order as any).createdBy?.name || "",
+        deadlineAt: order.deadlineAt?.toISOString() || null,
+      };
+    },
+    /**
+     * 获取订单信息（含工序计划，用于 PDF 打印）
+     * 独立方法，避免影响其他调用方
+     */
+    async getOrderWithPlans(id: string) {
+      const order = await orderRepo.findById(id, {
+        customer: { select: { name: true } },
+        items: {
+          include: {
+            product: {
+              select: { code: true, name: true, unit: true, spec: true },
+            },
+          },
+        },
+      });
+
+      if (!order) {
+        throw createError({ statusCode: 404, message: "订单不存在" });
+      }
+
+      const orderProcessPlans = await prisma.orderProcessPlan.findMany({
+        where: { orderId: id },
+        orderBy: [
+          { orderItemId: "asc" }, // 先按产品分组
+          { sequence: "asc" }, // 再按工序顺序
+        ],
+        include: {
+          orderItem: {
+            select: { productName: true },
+          },
+        },
+      });
+
+      return {
+        ...order,
+        orderProcessPlans,
+      };
+    },
+    // ==================== 写操作 ====================
+
+    async createOrder(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = createOrderSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        // 校验产品
+        const productIds = data.items?.map((i) => i.productId) || [];
+        if (productIds.length > 0) {
+          const products = await productRepo.findActiveByIds(productIds, txCtx);
+          if (products.length !== productIds.length) {
+            throw createError({
+              statusCode: 400,
+              message: "存在无效或已停用的产品",
+            });
+          }
+        }
+
+        // 校验客户
+        if (data.customerId) {
+          const customer = await customerRepo.findActiveById(
+            data.customerId,
+            txCtx,
+          );
+          if (!customer)
+            throw createError({
+              statusCode: 400,
+              message: "客户不存在或已停用",
+            });
+        }
+
+        // 计算 totalAmount（服务层职责，全程 IDecimal）
+        const totalAmount = (data.items || []).reduce((sum, item) => {
+          const qty = createDecimal(item.quantity);
+          const price = createDecimal(item.unitPrice);
+          const lineTotal = qty.times(price);
+          return sum.plus(lineTotal);
+        }, createDecimal(0));
+
+        // 创建订单
+        const orderCode = await seqService.getFormattedOrderCode();
+        return orderRepo.createOrder(
+          {
+            orderCode,
+            createdById: ctx.operatorId,
+            department: ctx.department || undefined,
+            customerId: data.customerId,
+            deadlineAt: data.deadlineAt ? new Date(data.deadlineAt) : undefined,
+            orderType: data.orderType || "STANDARD",
+            totalAmount: toPrismaDecimal(totalAmount),
+            items: (data.items || []).map((item) => ({
+              productId: item.productId,
+              productName: item.productName,
+              quantity: toPrismaDecimal(createDecimal(item.quantity)),
+              unitPrice: toPrismaDecimal(createDecimal(item.unitPrice)),
+            })),
+          },
+          txCtx,
+        );
+      });
+    },
+
+    /**
+     * 更新订单信息（客户、交期、明细单价/数量、重算总金额）
+     * 支持从应用层透传 tx
+     */
+    async updateOrder(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = updateOrderSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const order = await orderRepo.findById(data.orderId, undefined, txCtx);
+        if (!order)
+          throw createError({ statusCode: 404, message: "订单不存在" });
+        if (["COMPLETED", "CANCELLED"].includes(order.status)) {
+          throw createError({
+            statusCode: 400,
+            message: "已完成或已取消的订单不可修改",
+          });
+        }
+
+        // 更新订单头
+        const headerUpdate: any = {};
+        if (data.customerId !== undefined) {
+          if (data.customerId) {
+            const customer = await customerRepo.findActiveById(
+              data.customerId,
+              txCtx,
+            );
+            if (!customer) {
+              throw createError({
+                statusCode: 400,
+                message: "客户不存在或已停用",
+              });
+            }
+          }
+          headerUpdate.customerId = data.customerId || null;
+        }
+        if (data.deadlineAt !== undefined) {
+          headerUpdate.deadlineAt = data.deadlineAt
+            ? new Date(data.deadlineAt)
+            : null;
+        }
+        if (Object.keys(headerUpdate).length > 0) {
+          await orderRepo.updateOrder(data.orderId, headerUpdate, txCtx);
+        }
+
+        // 更新订单明细
+        if (data.items?.length) {
+          for (const itemData of data.items) {
+            const itemUpdate: any = {};
+            if (itemData.unitPrice !== undefined)
+              itemUpdate.unitPrice = toPrismaDecimal(
+                createDecimal(itemData.unitPrice),
+              );
+            if (itemData.quantity !== undefined)
+              itemUpdate.quantity = toPrismaDecimal(
+                createDecimal(itemData.quantity),
+              );
+            if (Object.keys(itemUpdate).length > 0) {
+              await orderItemRepo.updateOrderItem(
+                itemData.id,
+                itemUpdate,
+                txCtx,
+              );
+            }
+          }
+        }
+
+        // 重算总金额（服务层职责，全程 IDecimal）
+        const allItems = await orderItemRepo.findByOrderId(data.orderId, txCtx);
+        const totalAmount = allItems.reduce((sum, item) => {
+          const qty = createDecimal(String(item.quantity));
+          const price = createDecimal(String(item.unitPrice));
+          return sum.plus(qty.times(price));
+        }, createDecimal(0));
+        await orderRepo.updateOrder(
+          data.orderId,
+          { totalAmount: toPrismaDecimal(totalAmount) },
+          txCtx,
+        );
+
+        return orderRepo.findById(data.orderId, { items: true }, txCtx);
+      });
+    },
+
+    // 订单状态改变
+    async changeStatus(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = changeOrderStatusSchema.parse(rawdata);
+      const id = data.orderId;
+      const order = await orderRepo.findById(id, undefined, tx);
+      if (!order) throw createError({ statusCode: 404, message: "订单不存在" });
+
+      const allowed = STATUS_TRANSITIONS[order.orderType]?.[order.status] || [];
+      if (!allowed.includes(data.status)) {
+        throw createError({
+          statusCode: 400,
+          message: `不允许从 ${order.status} 变更到 ${data.status}`,
+        });
+      }
+
+      return orderRepo.updateOrder(id, { status: data.status }, tx);
+    },
+
+    // 订单发货
+    async shipOrder(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = shipOrderSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const order = await orderRepo.findById(data.orderId, undefined, txCtx);
+        if (!order)
+          throw createError({ statusCode: 404, message: "订单不存在" });
+        if (!["APPROVED", "PRODUCING", "READY"].includes(order.status)) {
+          throw createError({
+            statusCode: 400,
+            message: "当前订单状态不允许发货",
+          });
+        }
+
+        for (const item of data.items) {
+          const quantity = createDecimal(item.quantity);
+          const orderItem = await (txCtx.prisma as any).orderItem.findUnique({
+            where: { id: item.orderItemId },
+          });
+          if (!orderItem || orderItem.orderId !== data.orderId) {
+            throw createError({ statusCode: 400, message: "订单明细不匹配" });
+          }
+
+          const currentShipped = createDecimal(
+            String(orderItem.shippedQuantity),
+          );
+          const newShipped = currentShipped.plus(quantity);
+          const maxQty = createDecimal(String(orderItem.quantity));
+
+          if (newShipped.gt(maxQty)) {
+            throw createError({
+              statusCode: 400,
+              message: `${orderItem.productName} 发货数量超限`,
+            });
+          }
+
+          await (txCtx.prisma as any).orderItem.update({
+            where: { id: orderItem.id },
+            data: { shippedQuantity: toPrismaDecimal(newShipped) },
+          });
+        }
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/process.service.ts">
+// server/services/process.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createProcessRepository } from "~~/server/repositories/postgres/process.repository";
+import { createOrderProcessPlanRepository } from "~~/server/repositories/postgres/order-process-plan.repository";
+import { createProductProcessTemplateRepository } from "~~/server/repositories/postgres/product-process-template.repository";
+import {
+  createDecimal,
+  toPrismaDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import {
+  createProcessSchema,
+  updateProcessSchema,
+} from "~~/shared/schemas/api/process.schema";
+import { RequestContext } from "~~/shared/types/request";
+export const createProcessService = (prisma: PrismaClient) => {
+  const processRepo = createProcessRepository(prisma);
+  const planRepo = createOrderProcessPlanRepository(prisma);
+  const templateRepo = createProductProcessTemplateRepository(prisma);
+
+  return {
+    /** 获取所有标准工序 */
+    async getAllProcesses() {
+      return processRepo.findAll();
+    },
+
+    /** 获取订单工序计划 */
+    async getOrderPlans(orderId: string) {
+      return planRepo.findByOrderId(orderId);
+    },
+    // process.service.ts 补充
+
+    /** 创建标准工序 */
+    async create(rawdata: unknown, tx?: TxContext) {
+      const data = createProcessSchema.parse(rawdata);
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return processRepo.create(data, txCtx);
+      });
+    },
+    /**更新标准工序 */
+    async update(id: string, rawdata: unknown, tx?: TxContext) {
+      const parse = updateProcessSchema.parse(rawdata);
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const existing = await processRepo.findById(id, undefined, txCtx);
+        if (!existing)
+          throw createError({ statusCode: 404, message: "工序不存在" });
+        return processRepo.update({ id }, parse, txCtx);
+      });
+    },
+
+    /** 为订单生成工序计划（在进入生产时调用） */
+    async generateOrderPlans(
+      orderId: string,
+      items: Array<{ id: string; productId: string; quantity: number }>,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const existing = await planRepo.findByOrderId(orderId, tx);
+        if (existing && existing.length > 0) {
+          return existing; // 已存在，直接返回
+        }
+        for (const item of items) {
+          const templates = await templateRepo.findByProductId(
+            item.productId,
+            txCtx,
+          );
+
+          if (templates.length > 0) {
+            await planRepo.createMany(
+              templates.map((t) => ({
+                orderId,
+                orderItemId: item.id,
+                productId: item.productId,
+                processId: t.processId,
+                sequence: t.sequence,
+                processName: t.processName,
+                assignedQty: toPrismaDecimal(createDecimal(item.quantity)),
+                wageType: t.wageType,
+                standardHours:
+                  t.standardHours != null
+                    ? toPrismaDecimal(createDecimal(String(t.standardHours)))
+                    : undefined,
+                hourlyRate:
+                  t.hourlyRate != null
+                    ? toPrismaDecimal(createDecimal(String(t.hourlyRate)))
+                    : undefined,
+                unitPrice:
+                  t.unitPrice != null
+                    ? toPrismaDecimal(createDecimal(String(t.unitPrice)))
+                    : undefined,
+              })),
+              txCtx,
+            );
+          } else {
+            await planRepo.createMany(
+              [
+                {
+                  orderId,
+                  orderItemId: item.id,
+                  productId: item.productId,
+                  sequence: 1,
+                  processName: "总装",
+                  assignedQty: toPrismaDecimal(createDecimal(item.quantity)),
+                },
+              ],
+              txCtx,
+            );
+          }
+        }
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/product-process-template.service.ts">
+// server/services/product-process-template.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createProductProcessTemplateRepository } from "~~/server/repositories/postgres/product-process-template.repository";
+import {
+  createDecimal,
+  toPrismaDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+import { saveProductProcessTemplateSchema } from "~~/shared/schemas/api/product-process-template.schema";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import { createError } from "h3";
+
+export const createProductProcessTemplateService = (prisma: PrismaClient) => {
+  const repo = createProductProcessTemplateRepository(prisma);
+
+  return {
+    async getByProductId(productId: string) {
+      return repo.findByProductId(productId);
+    },
+
+    async saveTemplates(rawdata: unknown, tx?: TxContext) {
+      const { productId, processes } =
+        saveProductProcessTemplateSchema.parse(rawdata);
+
+      // 序号重复检查
+      const seqs = processes.map((p) => p.sequence);
+      const dupSeq = seqs.find((s, i) => seqs.indexOf(s) !== i);
+      if (dupSeq !== undefined) {
+        throw createError({
+          statusCode: 400,
+          message: `序号 ${dupSeq} 重复，请检查工序顺序`,
+        });
+      }
+
+      // 工序名称重复检查
+      const names = processes.map((p) => p.processName);
+      const dupName = names.find((n, i) => names.indexOf(n) !== i);
+      if (dupName) {
+        throw createError({
+          statusCode: 400,
+          message: `工序 "${dupName}" 重复，请检查`,
+        });
+      }
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.replaceTemplates(
+          productId,
+          processes.map((p) => ({
+            processId: p.processId,
+            processName: p.processName,
+            sequence: p.sequence,
+            wageType: p.wageType,
+            standardHours:
+              p.standardHours != null
+                ? toPrismaDecimal(createDecimal(p.standardHours))
+                : undefined,
+            hourlyRate:
+              p.hourlyRate != null
+                ? toPrismaDecimal(createDecimal(p.hourlyRate))
+                : undefined,
+            unitPrice:
+              p.unitPrice != null
+                ? toPrismaDecimal(createDecimal(p.unitPrice))
+                : undefined,
+          })),
+          txCtx,
+        );
+      });
+    },
+
+    async getProductsWithTemplates() {
+      return prisma.product.findMany({
+        where: { category: { in: ["FINISHED", "SEMI"] }, status: "ACTIVE" },
+        select: {
+          id: true,
+          code: true,
+          name: true,
+          _count: { select: { productProcessTemplates: true } },
+        },
+        orderBy: { code: "asc" },
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/product.service.ts">
+// server/services/product.service.ts
+import { createProductRepository } from "~~/server/repositories/postgres/product.repository";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import {
+  changeProductStatusSchema,
+  createProductSchema,
+  updateProductSchema,
+} from "~~/shared/schemas/api/product.schema";
+import type { PrismaClient } from "~~/prisma/generated/client";
+import type { RequestContext } from "~~/shared/types/request";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import { createError } from "h3";
+import { runInTransaction } from "~~/server/utils/transaction";
+
+export const createProductService = (prisma: PrismaClient) => {
+  const repo = createProductRepository(prisma);
+  const seqService = createSequenceService(prisma);
+
+  return {
+    // ==================== 读操作 ====================
+
+    async getList(
+      filter: Record<string, any>,
+      options: {
+        page: number;
+        limit: number;
+        sortField?: string;
+        sortDir?: string;
+      },
+    ) {
+      const where: any = { ...filter };
+      const orderBy: any = {};
+      orderBy[options.sortField || "createdAt"] = options.sortDir || "desc";
+
+      return repo.findMany(where, {
+        page: options.page,
+        limit: options.limit,
+        orderBy,
+      });
+    },
+    async getActiveByIds(ids: string[], tx?: TxContext) {
+      const client = tx?.prisma ?? prisma;
+      return client.product.findMany({
+        where: { id: { in: ids }, status: "ACTIVE" },
+        select: { id: true, name: true, unit: true },
+      });
+    },
+
+    async getById(id: string) {
+      const product = await repo.findById(id, {
+        inventories: true,
+        bomProducts: { where: { status: { not: "OBSOLETED" } } },
+      });
+      if (!product)
+        throw createError({ statusCode: 404, message: "产品不存在" });
+      return product;
+    },
+
+    // ==================== 写操作 ====================
+
+    async create(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = createProductSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const code = await seqService.getFormattedProductCode();
+        return repo.createWithCode(
+          {
+            code,
+            name: data.name,
+            spec: data.spec,
+            unit: data.unit,
+            category: data.category,
+            tags: data.tags,
+            attributes: data.attributes || undefined,
+            packUnit: data.packUnit,
+          },
+          txCtx,
+        );
+      });
+    },
+
+    async update(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = updateProductSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const old = await repo.findById(data.id, undefined, txCtx);
+        if (!old) throw createError({ statusCode: 404, message: "产品不存在" });
+        return repo.update({ id: data.id }, data, txCtx);
+      });
+    },
+
+    async changeStatus(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const data = changeProductStatusSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const old = await repo.findById(data.id, undefined, txCtx);
+        if (!old) throw createError({ statusCode: 404, message: "产品不存在" });
+        return repo.update({ id: data.id }, { status: data.status }, txCtx);
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/production-log.service.ts">
+// server/services/production-log.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createProductionLogRepository } from "~~/server/repositories/postgres/production-log.repository";
+import { createOrderProcessPlanRepository } from "~~/server/repositories/postgres/order-process-plan.repository";
+import {
+  createDecimal,
+  toPrismaDecimal,
+  type IDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+import {
+  submitProductionLogSchema,
+  editProductionLogSchema,
+  batchSubmitSchema,
+} from "~~/shared/schemas/api/production-log.schema";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import { RequestContext } from "~~/shared/types/request";
+import { createOrderItemRepository } from "../repositories/postgres/order-item.repository";
+
+export const createProductionLogService = (prisma: PrismaClient) => {
+  const logRepo = createProductionLogRepository(prisma);
+  const planRepo = createOrderProcessPlanRepository(prisma);
+  const orderItemRepo = createOrderItemRepository(prisma);
+  function calcLaborCost(params: {
+    wageType?: "HOURLY" | "PIECE";
+    qualifiedQty: IDecimal;
+    laborHours?: number;
+    hourlyRate?: number;
+    unitPrice?: number;
+  }): IDecimal | undefined {
+    if (
+      params.wageType === "HOURLY" &&
+      params.laborHours != null &&
+      params.hourlyRate != null
+    ) {
+      return createDecimal(params.laborHours).times(
+        createDecimal(params.hourlyRate),
+      );
+    }
+    if (params.wageType === "PIECE" && params.unitPrice != null) {
+      return params.qualifiedQty.times(createDecimal(params.unitPrice));
+    }
+    return undefined;
+  }
+
+  return {
+    /** 查询单条报工记录（含关联详情） */
+    async getById(id: string) {
+      const log = await logRepo.findFirst(
+        { id },
+        {
+          include: {
+            order: { select: { id: true, orderCode: true } },
+            product: {
+              select: { id: true, code: true, name: true, unit: true },
+            },
+            worker: { select: { id: true, code: true, name: true } },
+            operator: { select: { id: true, badgeCode: true, name: true } },
+            process: { select: { id: true, name: true } },
+            plan: {
+              select: {
+                id: true,
+                processName: true,
+                assignedQty: true,
+                completedQty: true,
+                qualifiedQty: true,
+                status: true,
+              },
+            },
+          },
+        },
+      );
+      if (!log)
+        throw createError({ statusCode: 404, message: "报工记录不存在" });
+      return log;
+    },
+    /** 提交报工 */
+    async submitLog(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const params = submitProductionLogSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const completedQty = createDecimal(params.completedQty);
+        const qualifiedQty = createDecimal(params.qualifiedQty);
+        const defectiveQty = createDecimal(params.defectiveQty);
+        const laborCost = calcLaborCost({
+          wageType: params.wageType,
+          qualifiedQty,
+          laborHours: params.laborHours,
+          hourlyRate: params.hourlyRate,
+          unitPrice: params.unitPrice,
+        });
+
+        // 校验：报工数量不能超出计划量
+        const plan = await planRepo.findFirst(
+          { id: params.planId },
+          undefined,
+          txCtx,
+        );
+        if (plan) {
+          const planCompleted = createDecimal(String(plan.completedQty));
+          const planAssigned = createDecimal(String(plan.assignedQty));
+          const newCompleted = planCompleted.plus(qualifiedQty);
+          if (newCompleted.gt(planAssigned)) {
+            const remaining = planAssigned.minus(planCompleted);
+            throw createError({
+              statusCode: 400,
+              message: `合格数量超限！计划总量: ${planAssigned.toString()}，已完成: ${planCompleted.toString()}，剩余可报: ${remaining.toString()}，本次合格: ${qualifiedQty.toString()}`,
+            });
+          }
+        }
+        const calcDefective = completedQty.minus(qualifiedQty);
+        if (!calcDefective.eq(createDecimal(params.defectiveQty || 0))) {
+          throw createError({
+            statusCode: 400,
+            message: `完成数必须等于合格数+不良数！完成: ${completedQty.toString()}，合格: ${qualifiedQty.toString()}，不良: ${params.defectiveQty || 0}`,
+          });
+        }
+
+        const log = await logRepo.createLog(
+          {
+            planId: params.planId,
+            orderId: params.orderId,
+            productId: params.productId,
+            processId: params.processId,
+            processName: params.processName,
+            completedQty: toPrismaDecimal(completedQty),
+            qualifiedQty: toPrismaDecimal(qualifiedQty),
+            defectiveQty: toPrismaDecimal(defectiveQty),
+            wageType: params.wageType,
+            laborHours: params.laborHours,
+            hourlyRate: params.hourlyRate,
+            unitPrice: params.unitPrice,
+            laborCost: laborCost ? toPrismaDecimal(laborCost) : undefined,
+            workerId: params.workerId,
+            operatorId: ctx.operatorId,
+            remark: params.remark,
+          },
+          txCtx,
+        );
+
+        // plan 已在上方获取
+        if (plan) {
+          const planCompleted = createDecimal(String(plan.completedQty));
+          const planQualified = createDecimal(String(plan.qualifiedQty));
+          const planDefective = createDecimal(String(plan.defectiveQty));
+          const planAssigned = createDecimal(String(plan.assignedQty));
+
+          const newCompleted = planCompleted.plus(completedQty);
+          const newQualified = planQualified.plus(qualifiedQty);
+          const newDefective = planDefective.plus(defectiveQty);
+          const newStatus = newCompleted.gte(planAssigned)
+            ? "COMPLETED"
+            : "IN_PROGRESS";
+
+          const updateData: any = {
+            completedQty: toPrismaDecimal(newCompleted),
+            qualifiedQty: toPrismaDecimal(newQualified),
+            defectiveQty: toPrismaDecimal(newDefective),
+            status: newStatus as any,
+          };
+          if (newStatus === "COMPLETED") updateData.endTime = new Date();
+          if (plan.status === "PENDING") updateData.startTime = new Date();
+
+          await planRepo.updateProgress(params.planId, updateData, txCtx);
+
+          if (plan.orderItemId) {
+            const allPlans = await planRepo.findByOrderItemId(
+              plan.orderItemId,
+              txCtx,
+            );
+            const minQualified = Math.min(
+              ...allPlans.map((p: any) => Number(p.qualifiedQty)),
+            );
+            await orderItemRepo.updateProducedQty(
+              plan.orderItemId,
+              toPrismaDecimal(createDecimal(minQualified)),
+              txCtx,
+            );
+          }
+        }
+
+        return log;
+      });
+    },
+
+    /** 编辑报工 */
+    async reviseLog(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      const params = editProductionLogSchema.parse(rawdata);
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const oldLog = await logRepo.findFirst(
+          { id: params.id },
+          undefined,
+          txCtx,
+        );
+        if (!oldLog)
+          throw createError({ statusCode: 404, message: "报工记录不存在" });
+
+        // 查 plan 并校验新数量不超限
+        const plan = await planRepo.findFirst(
+          { id: oldLog.planId },
+          undefined,
+          txCtx,
+        );
+        if (plan) {
+          const planAssigned = createDecimal(String(plan.assignedQty));
+          const planCompleted = createDecimal(String(plan.completedQty));
+          const oldQualified = createDecimal(String(oldLog.qualifiedQty));
+          const newQualifiedQty = createDecimal(params.qualifiedQty);
+          const qtyDiff = newQualifiedQty.minus(oldQualified);
+          const projected = planCompleted.plus(qtyDiff);
+          if (projected.gt(planAssigned)) {
+            const remaining = planAssigned
+              .minus(planCompleted)
+              .plus(oldQualified);
+            throw createError({
+              statusCode: 400,
+              message: `合格数量超限！计划总量: ${planAssigned.toString()}，当前已完成: ${planCompleted.toString()}，最大合格可报: ${remaining.toString()}`,
+            });
+          }
+        }
+
+        await logRepo.markAsOld(params.id, txCtx);
+
+        const completedQty = createDecimal(params.completedQty);
+        const qualifiedQty = createDecimal(params.qualifiedQty);
+        const defectiveQty = createDecimal(params.defectiveQty);
+        const wageType = params.wageType || (oldLog.wageType as any);
+        const laborHours =
+          params.laborHours ??
+          (oldLog.laborHours ? Number(oldLog.laborHours) : undefined);
+        const hourlyRate =
+          params.hourlyRate ??
+          (oldLog.hourlyRate ? Number(oldLog.hourlyRate) : undefined);
+        const unitPrice =
+          params.unitPrice ??
+          (oldLog.unitPrice ? Number(oldLog.unitPrice) : undefined);
+        const laborCost = calcLaborCost({
+          wageType,
+          qualifiedQty,
+          laborHours,
+          hourlyRate,
+          unitPrice,
+        });
+
+        const newLog = await logRepo.createLog(
+          {
+            planId: oldLog.planId,
+            orderId: oldLog.orderId,
+            productId: oldLog.productId,
+            processId: oldLog.processId || undefined,
+            processName: oldLog.processName,
+            completedQty: toPrismaDecimal(completedQty),
+            qualifiedQty: toPrismaDecimal(qualifiedQty),
+            defectiveQty: toPrismaDecimal(defectiveQty),
+            wageType,
+            laborHours,
+            hourlyRate,
+            unitPrice,
+            laborCost: laborCost ? toPrismaDecimal(laborCost) : undefined,
+            workerId: params.workerId || oldLog.workerId || undefined,
+            operatorId: ctx.operatorId,
+            remark: params.remark || `修改自 ${params.id}`,
+          },
+          txCtx,
+        );
+
+        if (plan) {
+          const oldCompleted = createDecimal(String(oldLog.completedQty));
+          const oldQualified = createDecimal(String(oldLog.qualifiedQty));
+          const oldDefective = createDecimal(String(oldLog.defectiveQty));
+          const qtyDiff = completedQty.minus(oldCompleted);
+          const qualifiedDiff = qualifiedQty.minus(oldQualified);
+          const defectiveDiff = defectiveQty.minus(oldDefective);
+
+          const planCompleted = createDecimal(String(plan.completedQty));
+          const planQualified = createDecimal(String(plan.qualifiedQty));
+          const planDefective = createDecimal(String(plan.defectiveQty));
+          const planAssigned = createDecimal(String(plan.assignedQty));
+
+          const newCompleted = planCompleted.plus(qtyDiff);
+          const newStatus = newCompleted.gte(planAssigned)
+            ? "COMPLETED"
+            : "IN_PROGRESS";
+
+          await planRepo.updateProgress(
+            oldLog.planId,
+            {
+              completedQty: toPrismaDecimal(newCompleted),
+              qualifiedQty: toPrismaDecimal(planQualified.plus(qualifiedDiff)),
+              defectiveQty: toPrismaDecimal(planDefective.plus(defectiveDiff)),
+              status: newStatus as any,
+            },
+            txCtx,
+          );
+        }
+        // 更新成品完工数量
+        const updatedPlan = await planRepo.findFirst(
+          { id: oldLog.planId },
+          undefined,
+          txCtx,
+        );
+        if (updatedPlan?.orderItemId) {
+          const allPlans = await planRepo.findByOrderItemId(
+            updatedPlan.orderItemId,
+            txCtx,
+          );
+          const minQualified = Math.min(
+            ...allPlans.map((p: any) => Number(p.qualifiedQty)),
+          );
+          await orderItemRepo.updateProducedQty(
+            updatedPlan.orderItemId,
+            toPrismaDecimal(createDecimal(minQualified)),
+            txCtx,
+          );
+        }
+
+        return newLog;
+      });
+    },
+
+    /** 批量报工 */
+    async batchSubmitLogs(
+      ctx: RequestContext,
+      rawdata: unknown,
+      tx?: TxContext,
+    ) {
+      const { reports } = batchSubmitSchema.parse(rawdata);
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const logs: any[] = [];
+
+        for (const report of reports) {
+          const completedQty = createDecimal(report.completedQty);
+          const qualifiedQty = createDecimal(report.qualifiedQty);
+          const defectiveQty = createDecimal(report.defectiveQty);
+
+          // 校验超限
+          const plan = await planRepo.findFirst(
+            { id: report.planId },
+            undefined,
+            txCtx,
+          );
+          if (plan) {
+            const planAssigned = createDecimal(String(plan.assignedQty));
+            const planCompleted = createDecimal(String(plan.completedQty));
+            const newCompleted = planCompleted.plus(qualifiedQty);
+            if (newCompleted.gt(planAssigned)) {
+              const remaining = planAssigned.minus(planCompleted);
+              throw createError({
+                statusCode: 400,
+                message: `${plan.processName} 合格数量超限！计划: ${planAssigned.toString()}，剩余: ${remaining.toString()}，本次合格: ${qualifiedQty.toString()}`,
+              });
+            }
+          }
+          const calcDefective = completedQty.minus(qualifiedQty);
+          if (!calcDefective.eq(createDecimal(report.defectiveQty || 0))) {
+            throw createError({
+              statusCode: 400,
+              message: `完成数必须等于合格数+不良数！完成: ${completedQty.toString()}，合格: ${qualifiedQty.toString()}，不良: ${report.defectiveQty || 0}`,
+            });
+          }
+
+          const laborCost = calcLaborCost({
+            wageType: report.wageType,
+            qualifiedQty,
+            laborHours: report.laborHours,
+            hourlyRate: report.hourlyRate,
+            unitPrice: report.unitPrice,
+          });
+
+          const log = await logRepo.createLog(
+            {
+              planId: report.planId,
+              orderId: report.orderId,
+              productId: report.productId,
+              processId: report.processId,
+              processName: report.processName,
+              workerId: report.workerId,
+              completedQty: toPrismaDecimal(completedQty),
+              qualifiedQty: toPrismaDecimal(qualifiedQty),
+              defectiveQty: toPrismaDecimal(defectiveQty),
+              wageType: report.wageType || "HOURLY",
+              laborHours: report.laborHours,
+              hourlyRate: report.hourlyRate,
+              unitPrice: report.unitPrice,
+              laborCost: laborCost ? toPrismaDecimal(laborCost) : undefined,
+              operatorId: ctx.operatorId,
+              remark: report.remark,
+            },
+            txCtx,
+          );
+
+          if (plan) {
+            const planCompleted = createDecimal(String(plan.completedQty));
+            const planQualified = createDecimal(String(plan.qualifiedQty));
+            const planDefective = createDecimal(String(plan.defectiveQty));
+            const planAssigned = createDecimal(String(plan.assignedQty));
+
+            const newCompleted = planCompleted.plus(completedQty);
+            const newQualified = planQualified.plus(qualifiedQty);
+            const newDefective = planDefective.plus(defectiveQty);
+            const newStatus = newCompleted.gte(planAssigned)
+              ? "COMPLETED"
+              : "IN_PROGRESS";
+
+            const updateData: any = {
+              completedQty: toPrismaDecimal(newCompleted),
+              qualifiedQty: toPrismaDecimal(newQualified),
+              defectiveQty: toPrismaDecimal(newDefective),
+              status: newStatus as any,
+            };
+            if (newStatus === "COMPLETED") updateData.endTime = new Date();
+            if (plan.status === "PENDING") updateData.startTime = new Date();
+
+            await planRepo.updateProgress(report.planId, updateData, txCtx);
+          }
+
+          logs.push(log);
+        }
+        // 批量更新成品完工数量
+        const updatedOrderItems = new Set<string>();
+        for (const report of reports) {
+          const plan = await planRepo.findFirst(
+            { id: report.planId },
+            undefined,
+            txCtx,
+          );
+          if (plan?.orderItemId) updatedOrderItems.add(plan.orderItemId);
+        }
+
+        for (const orderItemId of updatedOrderItems) {
+          const allPlans = await planRepo.findByOrderItemId(orderItemId, txCtx);
+          const minQualified = Math.min(
+            ...allPlans.map((p: any) => Number(p.qualifiedQty)),
+          );
+          await orderItemRepo.updateProducedQty(
+            orderItemId,
+            toPrismaDecimal(createDecimal(minQualified)),
+            txCtx,
+          );
+        }
+
+        return {
+          success: true,
+          count: logs.length,
+          logIds: logs.map((l: any) => l.id),
+        };
+      });
+    },
+
+    /** 查询订单报工记录 */
+    async getByOrderId(orderId: string) {
+      return logRepo.findLatestByOrderId(orderId);
+    },
+
+    /** 查询报工记录列表 */
+    async getList(params: {
+      page: number;
+      limit: number;
+      keyword?: string;
+      startDate?: string;
+      endDate?: string;
+    }) {
+      return logRepo.findAllWithFilters(params);
+    },
+  };
+};
+</file>
+
+<file path="server/services/purchase-order.service.ts">
+// server/services/purchase-order.service.ts
+import type {
+  PrismaClient,
+  PurchaseOrderStatus,
+} from "~~/prisma/generated/client";
+import { createPurchaseOrderRepository } from "~~/server/repositories/postgres/purchase-order.repository";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import {
+  createDecimal,
+  toPrismaDecimal,
+  type IDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+
+export const createPurchaseOrderService = (prisma: PrismaClient) => {
+  const repo = createPurchaseOrderRepository(prisma);
+  const seqService = createSequenceService(prisma);
+
+  return {
+    async getList(params: {
+      page: number;
+      limit: number;
+      keyword?: string;
+      status?: string;
+      supplierId?: string;
+      startDate?: string;
+      endDate?: string;
+    }) {
+      const where: any = {};
+      if (params.keyword) {
+        where.OR = [
+          { orderCode: { contains: params.keyword } },
+          { supplier: { name: { contains: params.keyword } } },
+        ];
+      }
+      if (params.status) where.status = params.status;
+      if (params.supplierId) where.supplierId = params.supplierId;
+      if (params.startDate || params.endDate) {
+        where.createdAt = {};
+        if (params.startDate) where.createdAt.gte = new Date(params.startDate);
+        if (params.endDate)
+          where.createdAt.lte = new Date(
+            new Date(params.endDate).setHours(23, 59, 59, 999),
+          );
+      }
+      return repo.findMany(where, {
+        page: params.page,
+        limit: params.limit,
+        orderBy: { createdAt: "desc" },
+        include: { supplier: { select: { name: true } }, items: true },
+      });
+    },
+    /** 更新采购单基本信息 */
+    async update(
+      id: string,
+      data: {
+        expectedDate?: Date | null;
+        remark?: string;
+      },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const existing = await repo.findById(id);
+        if (!existing)
+          throw createError({ statusCode: 404, message: "采购单不存在" });
+        return repo.update({ id }, data, txCtx);
+      });
+    },
+    async getById(id: string, canViewSensitive: boolean = false) {
+      const order = await repo.findById(id, {
+        supplier: {
+          select: canViewSensitive
+            ? {
+                id: true,
+                code: true,
+                name: true,
+                contact: true,
+                phone: true,
+                email: true,
+                address: true,
+                remark: true,
+                status: true,
+              }
+            : {
+                id: true,
+                code: true,
+                name: true,
+                status: true,
+              },
+        },
+        items: {
+          include: {
+            product: {
+              select: { code: true, name: true, spec: true, unit: true },
+            },
+          },
+        },
+        receipts: {
+          include: {
+            location: { select: { code: true, name: true } },
+            orderItem: {
+              select: {
+                productName: true,
+                product: { select: { unit: true } },
+              },
+            },
+            operator: { select: { badgeCode: true, name: true } },
+          },
+        },
+      });
+
+      return order;
+    },
+
+    /** 创建采购单 */
+    async create(
+      data: {
+        supplierId: string;
+        createdById: string;
+        expectedDate?: string;
+        remark?: string;
+        items: Array<{
+          productId: string;
+          productName: string;
+          spec?: string;
+          unit?: string;
+          quantity: number | string;
+          unitPrice: number | string;
+        }>;
+      },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const orderCode = await seqService.getFormattedPurchaseOrderCode();
+
+        const totalAmount = data.items.reduce((sum, item) => {
+          const lineTotal = createDecimal(item.quantity).times(
+            createDecimal(item.unitPrice),
+          );
+          return sum.plus(lineTotal);
+        }, createDecimal(0));
+
+        return repo.createWithItems(
+          {
+            orderCode,
+            supplierId: data.supplierId,
+            createdById: data.createdById,
+            expectedDate: data.expectedDate
+              ? new Date(data.expectedDate)
+              : undefined,
+            totalAmount: toPrismaDecimal(totalAmount),
+            remark: data.remark,
+            items: data.items.map((item) => ({
+              productId: item.productId,
+              productName: item.productName,
+              spec: item.spec,
+              unit: item.unit || "PCS",
+              quantity: toPrismaDecimal(createDecimal(item.quantity)),
+              unitPrice: toPrismaDecimal(createDecimal(item.unitPrice)),
+            })),
+          },
+          txCtx,
+        );
+      });
+    },
+
+    /** 审批 */
+    async approve(id: string, approvedById: string, tx?: TxContext) {
+      return repo.approve(id, approvedById, tx);
+    },
+
+    /** 更新状态 */
+    async updateStatus(
+      id: string,
+      status: PurchaseOrderStatus,
+      tx?: TxContext,
+    ) {
+      return repo.updateStatus(id, status, tx);
+    },
+
+    /** 增量更新已入库数量 */
+    async incrementReceivedQty(
+      itemId: string,
+      qty: number | string,
+      tx?: TxContext,
+    ) {
+      return repo.incrementReceivedQty(itemId, qty, tx);
+    },
+  };
+};
+</file>
+
+<file path="server/services/purchase-receipt.service.ts">
+// server/services/purchase-receipt.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createPurchaseReceiptRepository } from "~~/server/repositories/postgres/purchase-receipt.repository";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+
+export const createPurchaseReceiptService = (prisma: PrismaClient) => {
+  const repo = createPurchaseReceiptRepository(prisma);
+  const seqService = createSequenceService(prisma);
+
+  return {
+    async create(
+      data: {
+        orderId: string;
+        orderItemId: string;
+        productId: string;
+        quantity: number | string;
+        unitCost: number | string;
+        locationId?: string;
+        operatorId: string;
+        remark?: string;
+      },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const receiptCode = await seqService.getFormattedPurchaseReceiptCode();
+        return repo.create({ ...data, receiptCode }, txCtx);
+      });
+    },
+
+    async getList(params: {
+      page: number;
+      limit: number;
+      orderId?: string;
+      startDate?: string;
+      endDate?: string;
+    }) {
+      return repo.findMany({
+        page: params.page,
+        limit: params.limit,
+        orderId: params.orderId,
+        startDate: params.startDate ? new Date(params.startDate) : undefined,
+        endDate: params.endDate
+          ? new Date(
+              new Date(params.endDate as string).setHours(23, 59, 59, 999),
+            )
+          : undefined,
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/receipt.service.ts">
+// server/services/receipt.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import { createReceiptRepository } from "~~/server/repositories/postgres/receipt.repository";
+import { createBomRepository } from "~~/server/repositories/postgres/bom.repository";
+import { createOrderReservationRepository } from "../repositories/postgres/order-reservation.repository";
+import {
+  createDecimal,
+  type IDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+
+export interface ReceiptListFilter {
+  page: number;
+  limit: number;
+  receiptCode?: string;
+  orderId?: string;
+  productId?: string;
+  startDate?: Date;
+  endDate?: Date;
+  sortField?: string;
+  sortDir?: string;
+}
+
+export const createReceiptService = (prisma: PrismaClient) => {
+  const receiptRepo = createReceiptRepository(prisma);
+  const bomRepo = createBomRepository(prisma);
+  const reservationRepo = createOrderReservationRepository(prisma);
+  const seqService = createSequenceService(prisma);
+
+  return {
+    // ==================== 读操作 ====================
+
+    /** 入库单列表 */
+    async getList(filter: ReceiptListFilter) {
+      const {
+        page,
+        limit,
+        receiptCode,
+        orderId,
+        productId,
+        startDate,
+        endDate,
+        sortField,
+        sortDir,
+      } = filter;
+      const result = await receiptRepo.findManyWithDetails({
+        receiptCode,
+        orderId,
+        productId,
+        startDate,
+        endDate,
+        page,
+        limit,
+        sortField: sortField || "createdAt",
+        sortDir: sortDir || "desc",
+      });
+      return {
+        data: result.data,
+        pagination: {
+          page,
+          limit,
+          total: result.total,
+          totalPages: result.totalPages,
+        },
+      };
+    },
+
+    /** 入库单详情 */
+    async getById(id: string) {
+      const receipt = await receiptRepo.findByIdWithDetails(id);
+      if (!receipt)
+        throw createError({ statusCode: 404, message: "入库记录不存在" });
+      return receipt;
+    },
+
+    // ==================== 写操作（纯原子能力） ====================
+
+    /**
+     * 创建入库单记录（只写入库单，不改库存、不写流水）
+     */
+    async createReceipt(
+      params: {
+        orderId: string;
+        orderItemId: string;
+        productId: string;
+        quantity: number;
+        operatorId: string;
+        type?: string;
+        remark?: string;
+        locationId?: string;
+      },
+      tx?: TxContext,
+    ) {
+      const {
+        orderId,
+        orderItemId,
+        productId,
+        quantity,
+        operatorId,
+        type = "PRODUCTION_IN",
+        remark,
+        locationId,
+      } = params;
+
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const receiptCode = await seqService.getFormattedReceiptCode();
+
+        return receiptRepo.createReceipt(
+          {
+            orderId,
+            orderItemId,
+            productId,
+            quantity,
+            receiptCode,
+            operatorId,
+            remark: remark || `${typeLabel(type)}入库`,
+            locationId,
+          },
+          txCtx,
+        );
+      });
+    },
+
+    /**
+     * BOM 展开：递归展开到底层物料，返回物料 → 需求量的映射
+     * 纯计算，不写库。入库冲销和订单审批预留共用
+     */
+    async expandBomMaterials(
+      bomId: string,
+      multiplier: number | string,
+      tx?: TxContext,
+    ): Promise<Map<string, IDecimal>> {
+      const qty = createDecimal(multiplier);
+      const materialMap = new Map<string, IDecimal>();
+
+      const expand = async (b: any, multiplier: IDecimal, depth: number) => {
+        if (depth > 10) return;
+        for (const item of b.items) {
+          const childQty = createDecimal(String(item.quantity)).times(
+            multiplier,
+          );
+          const subBom = await bomRepo.findActiveByProductId(
+            item.materialId,
+            tx,
+          );
+          if (subBom) {
+            await expand(subBom, childQty, depth + 1);
+          } else {
+            const existing = materialMap.get(item.materialId);
+            materialMap.set(
+              item.materialId,
+              existing ? existing.plus(childQty) : childQty,
+            );
+          }
+        }
+      };
+
+      const bom = await bomRepo.findById(bomId, { items: true }, tx);
+      if (bom) {
+        await expand(bom, qty, 0);
+      }
+
+      return materialMap;
+    },
+  };
+};
+
+function typeLabel(type: string): string {
+  const map: Record<string, string> = {
+    PURCHASE_IN: "采购",
+    PRODUCTION_IN: "生产",
+    RETURN_IN: "退货",
+    TRANSFER_IN: "调拨",
+    CHECK_IN: "盘盈",
+    INIT: "初始化",
+  };
+  return map[type] || type;
+}
+</file>
+
+<file path="server/services/reservation.service.ts">
+// server/services/reservation.service.ts
+import type { PrismaClient, ReservationType } from "~~/prisma/generated/client";
+import { createOrderReservationRepository } from "~~/server/repositories/postgres/order-reservation.repository";
+import {
+  createDecimal,
+  toPrismaDecimal,
+  type IDecimal,
+} from "~~/shared/mappers/baseRepoType/decimal";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import { createInventoryService } from "./inventory.service";
+
+export const createReservationService = (prisma: PrismaClient) => {
+  const repo = createOrderReservationRepository(prisma);
+  const inventoryService = createInventoryService(prisma);
+  return {
+    /** 批量创建预留记录 */
+    async createMany(
+      data: Array<{
+        orderId: string;
+        orderItemId?: string;
+        productId: string;
+        type: ReservationType;
+        quantity: number | string;
+      }>,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.createMany(data, txCtx);
+      });
+    },
+
+    /** 查询订单所有预留 */
+    async findByOrderId(orderId: string, tx?: TxContext) {
+      return repo.findMany({ orderId }, { page: 1, limit: 10000 }, tx);
+    },
+
+    /** 查找未完全消耗的预留 */
+    async findUnconsumed(
+      orderId: string,
+      productId: string,
+      type: ReservationType,
+      tx?: TxContext,
+    ) {
+      return repo.findUnconsumedByOrderAndProduct(orderId, productId, type, tx);
+    },
+
+    /** 增加消耗量 */
+    async incrementConsumedQty(
+      id: string,
+      amount: number | string,
+      tx?: TxContext,
+    ) {
+      return repo.incrementConsumedQty(id, amount, tx);
+    },
+
+    /** 增加释放量 */
+    async incrementReleased(
+      id: string,
+      amount: number | string,
+      tx?: TxContext,
+    ) {
+      return repo.incrementReleased(id, amount, tx);
+    },
+
+    /**
+     * 冲销物料预留：根据物料需求 Map，按 FIFO 消耗预留记录
+     */
+    async consumeMaterials(
+      orderId: string,
+      materialMap: Map<string, IDecimal>,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        for (const [materialId, needed] of materialMap) {
+          let remaining = needed;
+          const reservations = await repo.findUnconsumedByOrderAndProduct(
+            orderId,
+            materialId,
+            "MATERIAL_RESERVE",
+            txCtx,
+          );
+          for (const res of reservations) {
+            if (remaining.lte(0)) break;
+            const total = createDecimal(String(res.quantity));
+            const consumed = createDecimal(String(res.consumedQty));
+            const released = createDecimal(String(res.released));
+            const availableToConsume = total.minus(consumed).minus(released);
+            if (availableToConsume.lte(0)) continue;
+            const toConsume = remaining.lt(availableToConsume)
+              ? remaining
+              : availableToConsume;
+
+            await repo.incrementConsumedQty(
+              res.id,
+              toPrismaDecimal(toConsume),
+              txCtx,
+            );
+
+            // 同步释放库存预留
+            await inventoryService.release(
+              {
+                productId: materialId,
+                qty: Number(toConsume.toString()),
+                relatedCode: orderId,
+              },
+              txCtx,
+            );
+            //扣减对应的库存量
+            await inventoryService.deduct(
+              {
+                productId: materialId,
+                quantity: Number(toConsume.toString()),
+                type: "PRODUCTION_OUT",
+              },
+              txCtx,
+            );
+
+            remaining = remaining.minus(toConsume);
+          }
+        }
+      });
+    },
+
+    /**
+     * 释放订单所有未完全释放的预留
+     */
+    async releaseAll(orderId: string, tx?: TxContext) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const result = await repo.findMany(
+          { orderId },
+          { page: 1, limit: 10000 },
+          txCtx,
+        );
+        for (const res of result.data) {
+          const remaining = createDecimal(String(res.quantity)).minus(
+            createDecimal(String(res.released)),
+          );
+          if (remaining.gt(0)) {
+            await repo.incrementReleased(
+              res.id,
+              toPrismaDecimal(remaining),
+              txCtx,
+            );
+          }
+        }
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/sequence.service.ts">
+// server/services/sequence.service.ts
+import { PrismaClient } from "~~/prisma/generated/client";
+import { createSequenceRepository } from "~~/server/repositories/postgres/sequence.repository";
+
+/**
+ * 创建序列号生成服务实例
+ *
+ * @remarks
+ * 该服务负责生成具有业务含义的唯一标识符（如员工工号、订单号）。
+ * 它依赖于底层的 Sequence Repository 来保证序列号的原子性递增，防止并发冲突。
+ *
+ * @param prisma Prisma 客户端实例
+ * @returns 包含各类编码生成方法的对象
+ */
+export const createSequenceService = (prisma: PrismaClient) => {
+  // 初始化序列号数据仓库，用于获取全局唯一的递增序列
+  const seqRepo = createSequenceRepository(prisma);
+
+  return {
+    /**
+     * 生成格式化的用户工号
+     *
+     * @description
+     * 规则：{年份}{4位递增序列}
+     * 示例：20230001, 20230002, ..., 20240001
+     *
+     * @returns Promise<string> 返回生成的员工工号字符串
+     */
+    async getFormattedUserCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `user_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `USER-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+
+    /**
+     * 生成格式化的订单编号
+     *
+     * @description
+     * 规则：ORD-{年份}{4位递增序列}
+     * 示例：ORD-20250001, ORD-20250002, ...
+     *
+     * @returns Promise<string> 返回生成的订单编号字符串
+     */
+    async getFormattedOrderCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `order_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `ORD-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+
+    /**
+     * 生成格式化的产品编码
+     *
+     * @description
+     * 规则：P-{年份}{4位递增序列}
+     * 示例：P-20250001, P-20250002, ...
+     *
+     * @returns Promise<string> 返回生成的产品编码字符串
+     */
+    async getFormattedProductCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `product_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `P-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+
+    /**
+     * 生成格式化的入库单号
+     *
+     * @description
+     * 规则：RC-{年份}{4位递增序列}
+     * 示例：RC-20250001, RC-20250002, ...
+     *
+     * @returns Promise<string> 返回生成的入库单号字符串
+     */
+    async getFormattedReceiptCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `RC_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `RC-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+
+    /**
+     * 生成格式化的 BOM 单号
+     *
+     * @description
+     * 规则：BOM-{年份}{4位递增序列}
+     * 示例：BOM-20250001, BOM-20250002, ...
+     *
+     * @returns Promise<string> 返回生成的 BOM 单号字符串
+     */
+    async getFormattedBomCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `BOM_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `BOM-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+
+    /**
+     * 生成格式化的客户编号
+     *
+     * @description
+     * 规则：CUS-{年份}{4位递增序列}
+     * 示例：CUS-20250001, CUS-20250002, ...
+     *
+     * @returns Promise<string> 返回生成的客户编号字符串
+     */
+    async getFormattedCustomerCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `customer_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `CUS-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+
+    async getFormattedWorkerCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `employee_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `EMY-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+
+    async getFormattedLocationCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `location_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `LOC-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+
+    /**
+     * 生成格式化的供应商编号
+     *
+     * @description
+     * 规则：SUP-{年份}{4位递增序列}
+     * 示例：SUP-20240001
+     *
+     * @returns Promise<string> 返回生成的供应商编号字符串
+     */
+    async getFormattedSupplierCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `supplier_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `SUP-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+    //采购单
+    async getFormattedPurchaseOrderCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `purchase_order_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `PO-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+    //采购入库单
+    async getFormattedPurchaseReceiptCode(): Promise<string> {
+      const year = new Date().getFullYear();
+      const seqKey = `PR_code:${year}`;
+      const seqValue = await seqRepo.getNextSequence(seqKey);
+      return `PR-${year}${String(seqValue).padStart(4, "0")}`;
+    },
+  };
+};
+</file>
+
+<file path="server/services/supplier.service.ts">
+// server/services/supplier.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createSupplierRepository } from "~~/server/repositories/postgres/supplier.repository";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+import { createError } from "h3";
+
+export const createSupplierService = (prisma: PrismaClient) => {
+  const repo = createSupplierRepository(prisma);
+  const seqService = createSequenceService(prisma);
+  // 脱敏工具
+  function maskPhone(phone?: string | null) {
+    if (!phone) return phone;
+    return phone.replace(/(\d{3})\d{4}(\d{4})/, "$1****$2");
+  }
+
+  function maskEmail(email?: string | null) {
+    if (!email) return email;
+    const [name, domain] = email.split("@");
+    if (name && domain) {
+      const masked = name.charAt(0) + "***" + name.charAt(name.length - 1);
+      return `${masked}@${domain}`;
+    } else {
+      throw createError({
+        statusCode: 400,
+        message: "请输入有效的邮箱格式",
+      });
+    }
+  }
+
+  function sanitizeSupplier(supplier: any, canViewSensitive: boolean) {
+    if (canViewSensitive) return supplier;
+    return {
+      ...supplier,
+      contact: supplier.contact ? "***" : supplier.contact,
+      phone: maskPhone(supplier.phone),
+      email: maskEmail(supplier.email),
+      address: supplier.address ? "***" : supplier.address,
+    };
+  }
+
+  return {
+    async getList(
+      params: {
+        page: number;
+        limit: number;
+        keyword?: string;
+        status?: string;
+      },
+      canViewSensitive: boolean = false,
+    ) {
+      const where: any = {};
+      if (params.keyword) {
+        where.OR = [
+          { name: { contains: params.keyword } },
+          { code: { contains: params.keyword } },
+          { phone: { contains: params.keyword } },
+        ];
+      }
+      if (params.status) where.status = params.status;
+      const result = await repo.findMany(where, {
+        page: params.page,
+        limit: params.limit,
+        orderBy: { code: "asc" },
+      });
+      result.data = result.data.map((s: any) =>
+        sanitizeSupplier(s, canViewSensitive),
+      );
+      return result;
+    },
+
+    async getAll(canViewSensitive: boolean = false) {
+      const suppliers = await repo.findAll(
+        { status: "ACTIVE" },
+        { orderBy: { code: "asc" } },
+      );
+      return suppliers.map((s: any) => sanitizeSupplier(s, canViewSensitive));
+    },
+
+    async getById(id: string, canViewSensitive: boolean = false) {
+      const supplier = await repo.findById(id);
+      if (!supplier)
+        throw createError({ statusCode: 404, message: "供应商不存在" });
+      return sanitizeSupplier(supplier, canViewSensitive);
+    },
+
+    async create(
+      data: {
+        name: string;
+        contact?: string;
+        phone?: string;
+        email?: string;
+        address?: string;
+        remark?: string;
+      },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const code = await seqService.getFormattedSupplierCode();
+        return repo.create({ ...data, code }, txCtx);
+      });
+    },
+
+    async update(
+      id: string,
+      data: {
+        name?: string;
+        contact?: string;
+        phone?: string;
+        email?: string;
+        address?: string;
+        remark?: string;
+        status?: string;
+      },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const existing = await repo.findById(id, undefined, txCtx);
+        if (!existing)
+          throw createError({ statusCode: 404, message: "供应商不存在" });
+
+        // 过滤脱敏占位值，避免覆盖真实数据
+        const cleanData: typeof data = {};
+        for (const [key, value] of Object.entries(data)) {
+          if (value === undefined) continue;
+
+          if (typeof value === "string") {
+            // 联系方式脱敏后的格式：***、****、138****5678、a***b@domain.com
+            if (
+              value === "***" || // contact/address 脱敏
+              /\*{3,}/.test(value) || // 包含连续星号
+              (key === "phone" && value.includes("****")) || // 电话中间打码
+              (key === "email" && value.includes("***")) // 邮箱打码
+            ) {
+              continue; // 跳过脱敏值
+            }
+          }
+
+          cleanData[key as keyof typeof data] = value;
+        }
+
+        return repo.update({ id }, cleanData, txCtx);
+      });
+    },
+  };
+};
+</file>
+
+<file path="server/services/token.service.ts">
+// // server/utils/token.ts
+// import jwt from "jsonwebtoken";
+// import { randomBytes } from "crypto";
+// import type { IUser } from "~~/shared/types/meData";
+// export interface AccessTokenPayload {
+//   sessionId: string;
+//   userid: string;
+//   role: string;
+//   type: "access";
+// }
+
+// export interface RefreshTokenPayload {
+//   sessionId: string;
+//   tokenId: string;
+//   type: "refresh";
+// }
+
+// export class TokenService {
+//   private config = useRuntimeConfig();
+//   /**
+//    * 用于生成用户认证相关token
+//    */
+
+//   // 生成短期访问令牌（1小时）
+//   generateAccessToken(sessionId: string, user: IUser): string {
+//     const payload: AccessTokenPayload = {
+//       sessionId: sessionId, //使用uuid作为userid在redis中的映射，避免直接暴露userid
+//       userid: user.id,
+//       role: user.role,
+//       type: "access",
+//     };
+
+//     return jwt.sign(payload, this.config.jwtAccessPrivateKey, {
+//       algorithm: "RS256",
+//       expiresIn: "1h", // 短期
+//       issuer: "auth-service",
+//     });
+//   }
+
+//   // 生成刷新令牌（7天）
+//   generateRefreshToken(sessionId: string): { token: string; tokenId: string } {
+//     const tokenId = randomBytes(32).toString("hex");
+//     const payload: RefreshTokenPayload = {
+//       sessionId,
+//       tokenId,
+//       type: "refresh",
+//     };
+
+//     const token = jwt.sign(payload, this.config.jwtRefreshPrivateKey, {
+//       algorithm: "RS256",
+//       expiresIn: "7d", // 长期
+//       issuer: "auth-service",
+//     });
+
+//     return { token, tokenId };
+//   }
+
+//   // 验证访问令牌
+//   verifyAccessToken(token: string): AccessTokenPayload | null {
+//     try {
+//       const decoded = jwt.verify(
+//         token,
+//         this.config.jwtAccessPublicKey.replace(/\\n/g, "\n"),
+//         {
+//           algorithms: ["RS256"], // 明确指定
+//         },
+//       );
+//       return decoded as AccessTokenPayload;
+//     } catch {
+//       return null;
+//     }
+//   }
+
+//   // 验证刷新令牌
+//   verifyRefreshToken(token: string): RefreshTokenPayload | null {
+//     try {
+//       const decoded = jwt.verify(
+//         token,
+//         this.config.jwtRefreshPublicKey.replace(/\\n/g, "\n"),
+//         {
+//           algorithms: ["RS256"], // 明确指定
+//         },
+//       );
+//       return decoded as RefreshTokenPayload;
+//     } catch {
+//       return null;
+//     }
+//   }
+//   //解密令牌
+//   decodeToken(token: string) {
+//     return jwt.decode(token);
+//   }
+//   /**
+//    * 后续可添加其他功能性token
+//    */
+// }
+// 服务层 — token.service.ts
+import jwt from "jsonwebtoken";
+import type {
+  AccessTokenPayload,
+  RefreshTokenPayload,
+} from "~~/shared/types/tokenType";
+
+export class TokenService {
+  private accessPrivate: string;
+  private accessPublic: string;
+  private refreshPrivate: string;
+  private refreshPublic: string;
+
+  constructor() {
+    const config = useRuntimeConfig();
+    this.accessPrivate = config.jwtAccessPrivateKey;
+    this.accessPublic = config.jwtAccessPublicKey;
+    this.refreshPrivate = config.jwtRefreshPrivateKey;
+    this.refreshPublic = config.jwtRefreshPublicKey;
+  }
+
+  /** 签发 Access Token */
+  issueAccessToken(params: {
+    userId: string;
+    sessionId: string;
+    role: string;
+  }): string {
+    const payload = {
+      sub: params.userId,
+      jti: params.sessionId,
+      role: params.role,
+      type: "access" as const,
+    } satisfies Omit<AccessTokenPayload, "iat" | "exp">;
+
+    return jwt.sign(payload, this.accessPrivate, {
+      algorithm: "RS256",
+      expiresIn: "30m",
+    });
+  }
+
+  /** 签发 Refresh Token */
+  issueRefreshToken(params: { userId: string; sessionId: string }): string {
+    const payload = {
+      sub: params.userId,
+      jti: params.sessionId,
+      type: "refresh" as const,
+    } satisfies Omit<RefreshTokenPayload, "iat" | "exp">;
+
+    return jwt.sign(payload, this.refreshPrivate, {
+      algorithm: "RS256",
+      expiresIn: "7d",
+    });
+  }
+
+  /** 验证 Access Token */
+  verifyAccessToken(token: string): AccessTokenPayload {
+    return jwt.verify(token, this.accessPublic) as AccessTokenPayload;
+  }
+
+  /** 验证 Refresh Token */
+  verifyRefreshToken(token: string): RefreshTokenPayload {
+    return jwt.verify(token, this.refreshPublic) as RefreshTokenPayload;
+  }
+
+  /**
+   * 签发一对 token，自动生成 sessionId
+   * @param params - 签发参数
+   * @param params.userId - 用户唯一标识，写入 token 的 sub 字段
+   * @param params.role - 用户角色，前端用于 UI 控制
+   *   角色可选值见 /infrastructure/permissionTemplate 枚举，
+   *   注意此处仅做写入，不校验权限合法性
+   * @returns 包含双 token 和 sessionId 的对象
+   */
+  issueTokenPair(params: {
+    userId: string;
+    role: string;
+    sessionId?: string;
+  }): {
+    accessToken: string;
+    refreshToken: string;
+    sessionId: string;
+  } {
+    const sessionId = params.sessionId || crypto.randomUUID();
+
+    const accessPayload = {
+      sub: params.userId,
+      jti: sessionId,
+      role: params.role,
+      type: "access" as const,
+    } satisfies Omit<AccessTokenPayload, "iat" | "exp">;
+
+    const refreshPayload = {
+      sub: params.userId,
+      jti: sessionId,
+      type: "refresh" as const,
+    } satisfies Omit<RefreshTokenPayload, "iat" | "exp">;
+
+    const accessToken = jwt.sign(accessPayload, this.accessPrivate, {
+      algorithm: "RS256",
+      expiresIn: "15m",
+    });
+
+    const refreshToken = jwt.sign(refreshPayload, this.refreshPrivate, {
+      algorithm: "RS256",
+      expiresIn: "7d",
+    });
+
+    return { accessToken, refreshToken, sessionId };
+  }
+  // server/services/token.service.ts
+  /** 只解码不验证，用于过期 token 提取 jti */
+  decodeAccessToken(token: string): AccessTokenPayload | null {
+    try {
+      return jwt.decode(token) as AccessTokenPayload;
+    } catch {
+      return null;
+    }
+  }
+}
+</file>
+
+<file path="server/services/user.service.ts">
+import bcrypt from "bcrypt";
+import { createUserRepository } from "~~/server/repositories/postgres/user.repository";
+import { createSequenceService } from "~~/server/services/sequence.service";
+import {
+  createUserSchema,
+  UpdateProfileInput,
+  updateProfileSchema,
+  UpdateUserInput,
+  updateUserSchema,
+  type CreateUserInput,
+} from "~~/shared/schemas/user.schema";
+import { redis, type IRedisClient } from "~~/server/infrastructure/redis";
+import {
+  getDefaultPermissions,
+  UserRole,
+  filterValidPermissions,
+} from "~~/server/infrastructure/permissionTemplate";
+import { formatAccount } from "~~/shared/utils/validators/account";
+import { PrismaClient } from "~~/prisma/generated/client";
+import { isPassword } from "~~/shared/utils/validators/password";
+import { createAuditService } from "./audit.service";
+import type { TxContext } from "~~/server/infrastructure/tx";
+
+const SALT_ROUNDS = 10;
+
+const sanitizeUser = (user: any) => {
+  if (!user) return null;
+  const { password, salt, ...rest } = user;
+  if (rest.phone)
+    rest.phone = rest.phone.replace(/(\d{3})\d{4}(\d{4})/, "$1****$2");
+  if (rest.email) {
+    const [name, domain] = rest.email.split("@");
+    const masked = name.charAt(0) + "***" + name.charAt(name.length - 1);
+    rest.email = `${masked}@${domain}`;
+  }
+  return rest;
+};
+
+export const createUserService = (
+  prisma: PrismaClient,
+  redisClient?: IRedisClient,
+) => {
+  const userRepo = createUserRepository(prisma);
+  const seqService = createSequenceService(prisma);
+  const auditService = createAuditService(prisma);
+
+  return {
+    async createUser(ctx: RequestContext, rawdata: unknown, tx?: TxContext) {
+      let data: CreateUserInput;
+      try {
+        data = createUserSchema.parse(rawdata);
+      } catch (error: any) {
+        throw createError({
+          statusCode: 400,
+          message: `校验错误: ${error.issues?.[0]?.message || "Invalid data"}`,
+        });
+      }
+
+      const email = data.email ? formatAccount(data.email, "email") : undefined;
+      const phone = data.phone ? formatAccount(data.phone, "phone") : undefined;
+
+      const existingUser = await userRepo.findExistingUser(
+        { email, phone },
+        tx,
+      );
+      if (existingUser) {
+        if (email && existingUser.email === email)
+          throw createError({
+          statusCode: 400,
+          message: `邮箱 ${email} 已被使用`,
+        });
+        if (phone && existingUser.phone === phone)
+          throw createError({
+          statusCode: 400,
+          message: `手机号 ${phone} 已被使用`,
+        });
+        throw createError({
+          statusCode: 400,
+          message: `用户创建失败:未知项已存在`,
+        });
+      }
+
+      const customPermissions = filterValidPermissions(
+        data.customPermissions || [],
+      );
+      let permissions = getDefaultPermissions(data.role as UserRole);
+      if (permissions.includes("*") || customPermissions.includes("*")) {
+        permissions = ["*"];
+      } else {
+        permissions = [...new Set([...permissions, ...customPermissions])];
+      }
+
+      const badgeCode = await seqService.getFormattedUserCode();
+      const hashed = await bcrypt.hash(data.password, SALT_ROUNDS);
+
+      const dbData = {
+        badgeCode,
+        name: data.name,
+        password: hashed,
+        department: data.department || undefined,
+        email: data.email || undefined,
+        phone: data.phone || undefined,
+        role: data.role,
+        permissions,
+      };
+
+      const user = await userRepo.create(dbData, tx);
+
+      // 审计日志移到 Application 层统一处理
+      return sanitizeUser(user);
+    },
+
+    async getUserList(
+      filter: any,
+      options: {
+        page: number;
+        limit: number;
+        sortField?: string;
+        sortDir?: string;
+      },
+    ) {
+      const orderBy: any = {};
+      orderBy[options.sortField || "createdAt"] = options.sortDir || "desc";
+      const result = await userRepo.findMany(filter, {
+        page: options.page,
+        limit: options.limit,
+        orderBy,
+      });
+      result.data = result.data.map(sanitizeUser);
+      return result;
+    },
+
+    async getUserById(id: string) {
+      const user = await userRepo.findById(id);
+      if (!user) throw createError({ statusCode: 404, message: "用户不存在" });
+      return sanitizeUser(user);
+    },
+
+    async updateUser(id: string, data: any, operatorId?: string) {
+      let cleanData: UpdateUserInput;
+      try {
+        cleanData = updateUserSchema.parse(data);
+      } catch (error: any) {
+        throw createError({
+          statusCode: 400,
+          message: error.issues?.[0]?.message || "数据格式不正确",
+        });
+      }
+
+      const old = await userRepo.findById(id);
+      if (!old) throw createError({ statusCode: 404, message: "用户不存在" });
+
+      // 转为可索引类型
+      const cleanRecord = cleanData as Record<string, any>;
+
+      // 过滤脱敏值
+      for (const key of ["email", "phone"]) {
+        const value = cleanRecord[key];
+        if (
+          value !== undefined &&
+          value !== null &&
+          (String(value).includes("*") || String(value).trim() === "")
+        ) {
+          delete cleanRecord[key];
+        }
+      }
+
+      // 如果传了密码，加密
+      if (cleanRecord.password) {
+        cleanRecord.password = await bcrypt.hash(
+          cleanRecord.password,
+          SALT_ROUNDS,
+        );
+      }
+
+      // 如果传了 customPermissions 或 role，重新计算 permissions
+      if (cleanRecord.customPermissions !== undefined || cleanRecord.role) {
+        const role = cleanRecord.role || old.role;
+        const customPermissions = cleanRecord.customPermissions
+          ? filterValidPermissions(cleanRecord.customPermissions)
+          : [];
+        const defaults = getDefaultPermissions(role as UserRole);
+        if (defaults.includes("*") || customPermissions.includes("*")) {
+          cleanRecord.permissions = ["*"];
+        } else {
+          cleanRecord.permissions = [
+            ...new Set([...defaults, ...customPermissions]),
+          ];
+        }
+        delete cleanRecord.customPermissions;
+      }
+
+      const updated = await userRepo.update({ id }, cleanRecord);
+
+      if (operatorId) {
+        for (const key of Object.keys(cleanRecord)) {
+          const oldVal = String((old as any)[key] ?? "");
+          const newVal = String((updated as any)[key] ?? "");
+          if (oldVal !== newVal) {
+            await auditService.log(operatorId, "User", id, "UPDATE", {
+              field: key,
+              oldValue: oldVal,
+              newValue: newVal,
+            });
+          }
+        }
+      }
+
+      return sanitizeUser(updated);
+    },
+
+    async changeStatus(
+      id: string,
+      status: "ACTIVE" | "INACTIVE",
+      operatorId?: string,
+    ) {
+      const result = await userRepo.update({ id }, { status });
+      if (!result)
+        throw createError({ statusCode: 404, message: "no such user" });
+      if (operatorId) {
+        await auditService.log(operatorId, "User", id, "STATUS_CHANGE", {
+          field: "status",
+          oldValue: status === "ACTIVE" ? "INACTIVE" : "ACTIVE",
+          newValue: status,
+        });
+      }
+      return result;
+    },
+
+    async updateProfile(
+      id: string,
+      body: {
+        name?: string;
+        email?: string;
+        phone?: string;
+        oldPassword?: string;
+        newPassword?: string;
+      },
+    ) {
+      // 格式校验
+      let cleanBody: UpdateProfileInput;
+      try {
+        cleanBody = updateProfileSchema.parse(body);
+      } catch (error: any) {
+        throw createError({
+          statusCode: 400,
+          message: error.issues?.[0]?.message || "数据格式不正确",
+        });
+      }
+      const user = await userRepo.findById(id);
+      if (!user) throw createError({ statusCode: 404, message: "用户不存在" });
+      // 用 cleanBody 替代 body
+      if (cleanBody.email !== undefined || cleanBody.phone !== undefined) {
+        const contactKey = `rate:contact:${id}`;
+        const contactCount = (await redis["security"].get(contactKey)) || 0;
+        if (contactCount >= 2)
+          throw createError({
+            statusCode: 429,
+            message: "1小时内修改联系方式次数已达上限",
+          });
+        if (!cleanBody.oldPassword)
+          throw createError({
+            statusCode: 400,
+            message: "修改联系方式需验证当前密码",
+          });
+        const valid = await bcrypt.compare(
+          cleanBody.oldPassword,
+          user.password,
+        );
+        if (!valid)
+          throw createError({ statusCode: 400, message: "当前密码不正确" });
+        await redis["security"].set(contactKey, contactCount + 1, 3600);
+      }
+
+      const data: any = {};
+      if (cleanBody.name !== undefined) data.name = cleanBody.name;
+      if (cleanBody.email !== undefined) data.email = cleanBody.email;
+      if (cleanBody.phone !== undefined) data.phone = cleanBody.phone;
+
+      if (cleanBody.newPassword) {
+        const pwdKey = `rate:pwd:${id}`;
+        const pwdCount = (await redis["security"].get(pwdKey)) || 0;
+        if (pwdCount >= 2)
+          throw createError({
+            statusCode: 429,
+            message: "24小时内修改密码次数已达上限",
+          });
+        if (!isPassword(cleanBody.newPassword, "secure"))
+          throw createError({ statusCode: 400, message: "密码强度不足" });
+        if (!cleanBody.oldPassword)
+          throw createError({ statusCode: 400, message: "请输入旧密码" });
+        const valid = await bcrypt.compare(
+          cleanBody.oldPassword,
+          user.password,
+        );
+        if (!valid)
+          throw createError({ statusCode: 400, message: "旧密码不正确" });
+        data.password = await bcrypt.hash(cleanBody.newPassword, SALT_ROUNDS);
+        await redis["security"].set(pwdKey, pwdCount + 1, 24 * 3600);
+      }
+
+      const updated = await userRepo.update({ id }, data);
+      return sanitizeUser(updated);
+    },
+  };
+};
+</file>
+
+<file path="server/services/worker.service.ts">
+// server/services/worker.service.ts
+import type { PrismaClient } from "~~/prisma/generated/client";
+import { createWorkerRepository } from "~~/server/repositories/postgres/worker.repository";
+import {
+  createWorkerSchema,
+  updateWorkerSchema,
+  type CreateWorkerInput,
+  type UpdateWorkerInput,
+} from "~~/shared/schemas/worker.schema";
+import { createSequenceService } from "./sequence.service";
+import { runInTransaction } from "~~/server/utils/transaction";
+import type { TxContext } from "~~/server/infrastructure/tx";
+
+export const createWorkerService = (prisma: PrismaClient) => {
+  const repo = createWorkerRepository(prisma);
+  const seqService = createSequenceService(prisma);
+
+  return {
+    async getList(params: {
+      page: number;
+      limit: number;
+      keyword?: string;
+      status?: string;
+    }) {
+      const where: any = {};
+      if (params.keyword) {
+        where.OR = [
+          { name: { contains: params.keyword } },
+          { phone: { contains: params.keyword } },
+          { idCard: { contains: params.keyword } },
+          { position: { contains: params.keyword } },
+          { code: { contains: params.keyword } },
+        ];
+      }
+      if (params.status) where.status = params.status;
+
+      return repo.findMany(where, {
+        page: params.page,
+        limit: params.limit,
+        orderBy: { createdAt: "desc" },
+      });
+    },
+
+    async getAll() {
+      return repo.findAll({ status: "ACTIVE" }, { orderBy: { name: "asc" } });
+    },
+
+    async getById(id: string) {
+      return repo.findById(id);
+    },
+
+    async create(rawdata: unknown, tx?: TxContext) {
+      const parse = createWorkerSchema.parse(rawdata);
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        const code = await seqService.getFormattedWorkerCode();
+        return repo.create({ ...parse, code }, txCtx);
+      });
+    },
+
+    async update(id: string, rawdata: unknown, tx?: TxContext) {
+      const parse = updateWorkerSchema.parse(rawdata);
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.update({ id }, parse, txCtx);
+      });
+    },
+
+    async deactivate(id: string, tx?: TxContext) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        return repo.update({ id }, { status: "INACTIVE" }, txCtx);
+      });
+    },
+  };
+};
+</file>
+
+</files>

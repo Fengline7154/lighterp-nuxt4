@@ -1,6 +1,5 @@
 // server/infrastructure/tx.ts
 import type { PrismaClient, Prisma } from "~~/prisma/generated/client";
-import type { ClientSession } from "mongoose";
 import type { IRedisClient } from "./redis"; // 假设你已导出 IRedisClient 接口
 
 /**
@@ -12,8 +11,6 @@ import type { IRedisClient } from "./redis"; // 假设你已导出 IRedisClient 
 export interface TxContext {
   /** Prisma 客户端，可以是普通客户端或事务客户端 */
   prisma: PrismaClient | Prisma.TransactionClient;
-  /** Mongoose 事务 Session（可选） */
-  mongo?: ClientSession;
   /** Redis 客户端（可选），通常 Redis 操作不参与数据库事务，但可通过此上下文传递以达到代码统一 */
   redis?: IRedisClient;
 }

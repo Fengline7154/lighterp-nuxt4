@@ -10,9 +10,13 @@ export const addStockSchema = z.object({
 
 // 出库 Schema
 export const deductStockSchema = z.object({
-  relatedCode: z.string().optional(),
+  productId: z.string(),
+  type: z.string().optional(),
   quantity: z.coerce.number().positive("出库数量必须大于0"),
   remark: z.string().max(200).optional(),
+  relatedCode: z.string().optional(),
+  locationId: z.string().optional(),
+  orderId: z.string().optional(),
 });
 
 // 盘点调整
@@ -40,8 +44,6 @@ export const inventoryListItemSchema = z.object({
   quantity: z.coerce.number(),
   reservedQty: z.coerce.number(),
   availableQty: z.coerce.number(),
-  allocatedQty: z.coerce.number(),
-  allocatableQty: z.coerce.number(),
   lockVersion: z.number(),
   updatedAt: z.string(),
 });

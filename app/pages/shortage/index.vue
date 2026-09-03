@@ -173,11 +173,13 @@ const detailProductName = ref("");
 const details = ref<any[]>([]);
 
 const openDetail = async (productId: string) => {
-  const { data: detailData } = await useFetch(
-    "/api/analytics/shortage-detail",
-    { query: { productId } },
-  );
-  details.value = (detailData.value as any) || [];
+  try {
+    details.value = await $fetch<any>("/api/analytics/shortage-detail", {
+      query: { productId },
+    });
+  } catch {
+    details.value = [];
+  }
   detailProductName.value =
     shortages.value.find((s: any) => s.productId === productId)?.productName ||
     "";

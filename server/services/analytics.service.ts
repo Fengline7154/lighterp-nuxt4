@@ -113,16 +113,13 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         where: { status: { in: ["APPROVED", "PRODUCING"] } },
         include: {
           items: {
-            include: {
-              product: {
-                select: {
-                  id: true,
-                  name: true,
-                  code: true,
-                  category: true,
-                  unit: true,
-                },
-              },
+            select: {
+              id: true,
+              productId: true,
+              productName: true,
+              quantity: true,
+              fulfilledQuantity: true,
+              bomId: true,
             },
           },
         },
@@ -132,29 +129,61 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         return { shortages: [], totalOrders: 0 };
       }
 
-      const expandBom = async (
+      // 边展边判断：当前层级库存够就停止，不够继续向下展开
+      const expandBomWithStockCheck = async (
         productId: string,
         productName: string,
-        parentQuantity: IDecimal,
+        demandQty: IDecimal,
         depth: number = 0,
       ): Promise<Map<string, { productName: string; quantity: IDecimal }>> => {
         const result = new Map<
           string,
           { productName: string; quantity: IDecimal }
         >();
-        if (depth >= 10) return result;
+        if (depth >= 10 || demandQty.lte(0)) return result;
 
-        const bom = await bomRepo.findActiveByProductId(productId);
-        if (!bom || bom.items.length === 0) {
-          result.set(productId, { productName, quantity: parentQuantity });
+        // 查该产品库存和预留
+        const inv = await prisma.inventory.findUnique({
+          where: { productId },
+          select: { quantity: true, reservedQty: true },
+        });
+
+        const totalQty = inv
+          ? createDecimal(String(inv.quantity))
+          : createDecimal(0);
+        const reservedQty = inv
+          ? createDecimal(String(inv.reservedQty))
+          : createDecimal(0);
+        const availableQty = totalQty.minus(reservedQty);
+
+        if (availableQty.gte(demandQty)) {
+          // 库存够，不再向下展开
+          result.set(productId, { productName, quantity: demandQty });
           return result;
         }
 
+        // 库存不够，记录缺口，剩余需求向下展开
+        if (availableQty.gt(0)) {
+          result.set(productId, {
+            productName,
+            quantity: demandQty.minus(availableQty),
+          });
+        } else {
+          result.set(productId, { productName, quantity: demandQty });
+        }
+
+        // 向下展开剩余需求
+        const remainingQty = availableQty.gt(0)
+          ? demandQty.minus(availableQty)
+          : demandQty;
+        const bom = await bomRepo.findActiveByProductId(productId);
+        if (!bom || bom.items.length === 0) return result;
+
         for (const bomItem of bom.items) {
           const childQty = createDecimal(String(bomItem.quantity)).times(
-            parentQuantity,
+            remainingQty,
           );
-          const childResult = await expandBom(
+          const childResult = await expandBomWithStockCheck(
             bomItem.materialId,
             bomItem.materialName,
             childQty,
@@ -172,6 +201,7 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
             }
           }
         }
+
         return result;
       };
 
@@ -192,7 +222,8 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
           const remaining = totalQty.minus(fulfilled);
           if (remaining.lte(0)) continue;
 
-          const expandedMaterials = await expandBom(
+          // 从订单明细产品开始边展边判断
+          const expandedMaterials = await expandBomWithStockCheck(
             item.productId,
             item.productName,
             remaining,
@@ -224,6 +255,7 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         }
       }
 
+      // 缺口计算：需求量 - 可用库存
       const allMaterialIds = [...materialMap.keys()];
       const inventories = await prisma.inventory.findMany({
         where: { productId: { in: allMaterialIds } },
@@ -248,7 +280,9 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         );
         const inv = invMap.get(productId);
         const invQty = inv
-          ? createDecimal(String(inv.quantity))
+          ? createDecimal(String(inv.quantity)).minus(
+              createDecimal(String(inv.reservedQty)),
+            )
           : createDecimal(0);
         const realShortage = totalDemand.minus(invQty);
 
@@ -283,10 +317,12 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         include: {
           items: {
             select: {
+              id: true,
               productId: true,
               productName: true,
               quantity: true,
               fulfilledQuantity: true,
+              bomId: true,
             },
           },
         },
@@ -299,33 +335,76 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         source: string;
       }> = [];
 
-      const findInBom = async (
+      // 边展边判断：计算某个订单明细对目标物料的缺口需求
+      const findShortageInBom = async (
         targetProductId: string,
         currentProductId: string,
-        parentQuantity: IDecimal,
+        demandQty: IDecimal,
         depth: number = 0,
       ): Promise<IDecimal> => {
-        if (depth >= 10) return createDecimal(0);
-        if (currentProductId === targetProductId) return parentQuantity;
+        if (depth >= 10 || demandQty.lte(0)) return createDecimal(0);
+
+        // 如果当前层级就是目标物料
+        if (currentProductId === targetProductId) {
+          // 查该物料的可用库存
+          const inv = await prisma.inventory.findUnique({
+            where: { productId: targetProductId },
+            select: { quantity: true, reservedQty: true },
+          });
+          const totalQty = inv
+            ? createDecimal(String(inv.quantity))
+            : createDecimal(0);
+          const reservedQty = inv
+            ? createDecimal(String(inv.reservedQty))
+            : createDecimal(0);
+          const availableQty = totalQty.minus(reservedQty);
+
+          // 缺口 = 需求 - 可用
+          const shortage = demandQty.minus(availableQty);
+          return shortage.gt(0) ? shortage : createDecimal(0);
+        }
+
+        // 当前层级不是目标物料，查它的库存是否够
+        const inv = await prisma.inventory.findUnique({
+          where: { productId: currentProductId },
+          select: { quantity: true, reservedQty: true },
+        });
+        const totalQty = inv
+          ? createDecimal(String(inv.quantity))
+          : createDecimal(0);
+        const reservedQty = inv
+          ? createDecimal(String(inv.reservedQty))
+          : createDecimal(0);
+        const availableQty = totalQty.minus(reservedQty);
+
+        // 当前层级库存够，不需要向下展开，目标物料在这里无缺口
+        if (availableQty.gte(demandQty)) {
+          return createDecimal(0);
+        }
+
+        // 当前层级库存不够，剩余需求向下展开
+        const remainingQty = availableQty.gt(0)
+          ? demandQty.minus(availableQty)
+          : demandQty;
 
         const bom = await bomRepo.findActiveByProductId(currentProductId);
         if (!bom || bom.items.length === 0) return createDecimal(0);
 
-        let totalDemand = createDecimal(0);
+        let totalShortage = createDecimal(0);
         for (const bomItem of bom.items) {
-          const childQty = createDecimal(String(bomItem.quantity)).times(
-            parentQuantity,
+          const childDemand = createDecimal(String(bomItem.quantity)).times(
+            remainingQty,
           );
-          totalDemand = totalDemand.plus(
-            await findInBom(
+          totalShortage = totalShortage.plus(
+            await findShortageInBom(
               targetProductId,
               bomItem.materialId,
-              childQty,
+              childDemand,
               depth + 1,
             ),
           );
         }
-        return totalDemand;
+        return totalShortage;
       };
 
       for (const order of producingOrders) {
@@ -335,28 +414,45 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
           const remaining = totalQty.minus(fulfilled);
           if (remaining.lte(0)) continue;
 
+          // 如果订单明细产品本身就是目标物料
           if (item.productId === productId) {
-            details.push({
-              orderCode: order.orderCode,
-              productName: item.productName,
-              demand: remaining.toString(),
-              source: "直接订单",
+            const inv = await prisma.inventory.findUnique({
+              where: { productId },
+              select: { quantity: true, reservedQty: true },
             });
+            const totalInv = inv
+              ? createDecimal(String(inv.quantity))
+              : createDecimal(0);
+            const reservedInv = inv
+              ? createDecimal(String(inv.reservedQty))
+              : createDecimal(0);
+            const availableInv = totalInv.minus(reservedInv);
+            const shortage = remaining.minus(availableInv);
+
+            if (shortage.gt(0)) {
+              details.push({
+                orderCode: order.orderCode,
+                productName: item.productName,
+                demand: shortage.toString(),
+                source: "直接订单",
+              });
+            }
             continue;
           }
 
-          const bomDemand = await findInBom(
+          // 从订单明细产品开始边展边判断
+          const shortageQty = await findShortageInBom(
             productId,
             item.productId,
             remaining,
             0,
           );
 
-          if (bomDemand.gt(0)) {
+          if (shortageQty.gt(0)) {
             details.push({
               orderCode: order.orderCode,
               productName: item.productName,
-              demand: bomDemand.toString(),
+              demand: shortageQty.toString(),
               source: "BOM 展开",
             });
           }

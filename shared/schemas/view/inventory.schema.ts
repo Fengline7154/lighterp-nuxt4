@@ -8,9 +8,7 @@ export const inventoryListItemSchema = z.object({
   productName: z.string(),
   quantity: z.coerce.number(),
   reservedQty: z.coerce.number(),
-  allocatedQty: z.coerce.number(),
   availableQty: z.coerce.number(),
-  allocatableQty: z.coerce.number(),
   lockVersion: z.number(),
   updatedAt: z.string(),
   // 库位分布（可选）

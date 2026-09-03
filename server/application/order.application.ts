@@ -46,6 +46,13 @@ export const createOrderApplication = (prisma: PrismaClient) => {
   const productService = createProductService(prisma);
   const customerService = createCustomerService(prisma);
   // ==================== 公共编排函数 ====================
+  // 在 order.application.ts 顶部定义类型
+  //缺料警告结构化
+  interface ShortageWarning {
+    productId: string;
+    productName: string;
+    shortageQty: string;
+  }
 
   async function reserveProducts(
     orderId: string,
@@ -107,65 +114,88 @@ export const createOrderApplication = (prisma: PrismaClient) => {
     return { reserved, warnings };
   }
 
-  async function reserveMaterials(
+  async function reserveMaterialRecursive(
     orderId: string,
-    materialMap: Map<string, IDecimal>,
+    productId: string,
+    demandQty: IDecimal,
     txCtx: TxContext,
-  ): Promise<string[]> {
-    const warnings: string[] = [];
+    warnings: string[],
+    depth: number = 0,
+  ) {
+    if (depth > 10 || demandQty.lte(0)) return;
 
-    for (const [materialId, demand] of materialMap) {
-      const stock = await inventoryService.getAvailableStock(materialId, txCtx);
-      if (!stock) {
-        warnings.push(`物料 ${materialId}: 无库存记录`);
-        continue;
-      }
-      if (stock.availableQty.lte(0)) {
-        warnings.push(
-          `物料 ${stock.productName}: 可用库存为 0，需求 ${demand.toString()}`,
-        );
-        continue;
-      }
-
-      const toReserve = stock.availableQty.lt(demand)
-        ? stock.availableQty
-        : demand;
-
-      try {
-        await inventoryService.reserve(
-          {
-            productId: materialId,
-            qty: Number(toReserve.toString()),
-            relatedCode: orderId,
-          },
-          txCtx,
-        );
-        await reservationService.createMany(
-          [
-            {
-              orderId,
-              productId: materialId,
-              type: "MATERIAL_RESERVE",
-              quantity: toPrismaDecimal(toReserve),
-            },
-          ],
-          txCtx,
-        );
-
-        if (toReserve.lt(demand)) {
-          const shortage = demand.minus(toReserve);
-          warnings.push(
-            `物料 ${stock.productName}: 预留不足，需求 ${demand.toString()}，实际预留 ${toReserve.toString()}，缺 ${shortage.toString()}`,
-          );
-        }
-      } catch {
-        warnings.push(
-          `物料 ${stock.productName}: 预留失败，需求 ${demand.toString()}`,
-        );
-      }
+    const stock = await inventoryService.getAvailableStock(productId, txCtx);
+    if (!stock) {
+      warnings.push(`物料 ${productId}: 无库存记录`);
+      return;
+    }
+    if (stock.availableQty.lte(0)) {
+      warnings.push(
+        `物料 ${stock.productName}: 可用库存为 0，需求 ${demandQty.toString()}`,
+      );
+      return;
     }
 
-    return warnings;
+    // 先预留当前层级产品
+    const toReserve = stock.availableQty.lt(demandQty)
+      ? stock.availableQty
+      : demandQty;
+
+    try {
+      await inventoryService.reserve(
+        {
+          productId,
+          qty: Number(toReserve.toString()),
+          relatedCode: orderId,
+        },
+        txCtx,
+      );
+      await reservationService.createMany(
+        [
+          {
+            orderId,
+            productId,
+            type: "MATERIAL_RESERVE",
+            quantity: toPrismaDecimal(toReserve),
+          },
+        ],
+        txCtx,
+      );
+    } catch {
+      warnings.push(
+        `物料 ${stock.productName}: 预留失败，需求 ${demandQty.toString()}`,
+      );
+      return;
+    }
+
+    // 如果预留量不足，剩余需求向下展开
+    const remaining = demandQty.minus(toReserve);
+    if (remaining.lte(0)) return;
+
+    // 查当前产品的 BOM
+    const bom = await bomService.findActiveByProductId(productId, txCtx);
+    if (!bom) {
+      if (toReserve.lt(demandQty)) {
+        const shortage = demandQty.minus(toReserve);
+        warnings.push(
+          `物料 ${stock.productName}: 预留不足，需求 ${demandQty.toString()}，实际预留 ${toReserve.toString()}，缺 ${shortage.toString()}`,
+        );
+      }
+      return;
+    }
+
+    // 向下展开：对每个子物料按比例计算剩余需求
+    for (const item of bom.items) {
+      const childDemand = createDecimal(String(item.quantity)).times(remaining);
+      await reserveMaterialRecursive(
+        orderId,
+        item.materialId,
+        childDemand,
+        txCtx,
+        warnings,
+        depth + 1,
+      );
+    }
   }
 
   async function releaseAllReservations(orderId: string, txCtx: TxContext) {
@@ -198,21 +228,7 @@ export const createOrderApplication = (prisma: PrismaClient) => {
             txCtx,
           );
         }
-      } else if (res.type === "ALLOCATE") {
-        const currentAllocated = createDecimal(String(stock.allocatedQty));
-        const actual = remaining.lt(currentAllocated)
-          ? remaining
-          : currentAllocated;
-        if (actual.gt(0)) {
-          await inventoryService.markAllocated(
-            res.productId,
-            actual.negated(),
-            stock.lockVersion,
-            txCtx,
-          );
-        }
       }
-
       await reservationService.incrementReleased(
         res.id,
         toPrismaDecimal(remaining),
@@ -220,7 +236,97 @@ export const createOrderApplication = (prisma: PrismaClient) => {
       );
     }
   }
+  async function backflushRecursive(
+    orderId: string,
+    productId: string,
+    demandQty: IDecimal,
+    txCtx: TxContext,
+    warnings: Array<string | ShortageWarning>,
+    depth: number,
+  ) {
+    if (depth > 10 || demandQty.lte(0)) return;
 
+    // 1. 先消耗预留
+    const reservations = await reservationService.findUnconsumed(
+      orderId,
+      productId,
+      "MATERIAL_RESERVE",
+      txCtx,
+    );
+
+    let remaining = demandQty;
+    for (const res of reservations) {
+      if (remaining.lte(0)) break;
+      const total = createDecimal(String(res.quantity));
+      const consumed = createDecimal(String(res.consumedQty));
+      const released = createDecimal(String(res.released));
+      const available = total.minus(consumed).minus(released);
+      if (available.lte(0)) continue;
+
+      const toConsume = remaining.lt(available) ? remaining : available;
+      await reservationService.incrementConsumedQty(
+        res.id,
+        toPrismaDecimal(toConsume),
+        txCtx,
+      );
+      await inventoryService.release(
+        {
+          productId,
+          qty: Number(toConsume.toString()),
+          relatedCode: orderId,
+        },
+        txCtx,
+      );
+      remaining = remaining.minus(toConsume);
+    }
+
+    if (remaining.lte(0)) return;
+
+    // 2. 预留不够，扣库存
+    const stock = await inventoryService.getAvailableStock(productId, txCtx);
+    if (stock && stock.availableQty.gt(0)) {
+      const toDeduct = stock.availableQty.lt(remaining)
+        ? stock.availableQty
+        : remaining;
+      await inventoryService.deduct(
+        {
+          productId,
+          quantity: Number(toDeduct.toString()),
+          type: "PRODUCTION_OUT",
+        },
+        txCtx,
+      );
+      remaining = remaining.minus(toDeduct);
+    }
+
+    if (remaining.lte(0)) return;
+
+    // 3. 库存不够，向下展开
+    const bom = await bomService.findActiveByProductId(productId, txCtx);
+    if (!bom) {
+      const productName = stock?.productName || productId;
+      warnings.push({
+        productId,
+        productName,
+        shortageQty: remaining.toString(),
+      });
+      return;
+    }
+
+    for (const bomItem of bom.items) {
+      const childDemand = createDecimal(String(bomItem.quantity)).times(
+        remaining,
+      );
+      await backflushRecursive(
+        orderId,
+        bomItem.materialId,
+        childDemand,
+        txCtx,
+        warnings,
+        depth + 1,
+      );
+    }
+  }
   // ==================== 状态转移处理器 ====================
 
   async function handlePendingToApproved(
@@ -247,29 +353,30 @@ export const createOrderApplication = (prisma: PrismaClient) => {
     warnings.push(...productWarnings);
 
     for (const item of order.items) {
-      const publishedBom = await bomService.findActiveByProductId(
-        item.productId,
-      );
-      if (!publishedBom) continue;
-
       const totalDemand = createDecimal(item.quantity);
       const productReservedQty =
         productReserved.get(item.productId) || createDecimal(0);
       const remainingDemand = totalDemand.minus(productReservedQty);
       if (remainingDemand.lte(0)) continue;
 
-      const materialMap = await receiptService.expandBomMaterials(
-        publishedBom.id,
-        remainingDemand.toString(),
-        txCtx,
-      );
-      const materialWarnings = await reserveMaterials(
-        order.id,
-        materialMap,
-        txCtx,
-      );
-      warnings.push(...materialWarnings);
+      const bom = await bomService.findActiveByProductId(item.productId, txCtx);
+      if (!bom) continue;
+
+      // 从 BOM 直接子物料开始递归预留（半成品优先，不够向下展开原料）
+      for (const bomItem of bom.items) {
+        const childDemand = createDecimal(String(bomItem.quantity)).times(
+          remainingDemand,
+        );
+        await reserveMaterialRecursive(
+          order.id,
+          bomItem.materialId,
+          childDemand,
+          txCtx,
+          warnings,
+        );
+      }
     }
+
     // 4. 标准品审批通过后生成工序计划（变型品/定制品在 SAMPLED→PRODUCING 时生成）
     if (order.orderType === "STANDARD") {
       await processService.generateOrderPlans(
@@ -460,28 +567,27 @@ export const createOrderApplication = (prisma: PrismaClient) => {
       txCtx,
     );
 
-    // 补物料预留
+    // 补物料预留（从 BOM 直接子物料开始，半成品优先，不够向下展开）
     for (const item of order.items) {
       const publishedBom = await bomService.findActiveByProductId(
         item.productId,
+        txCtx,
       );
       if (!publishedBom) continue;
 
-      const materialMap = await receiptService.expandBomMaterials(
-        publishedBom.id,
-        Number(item.quantity),
-        txCtx,
-      );
-
-      const materialWarnings = await reserveMaterials(
-        order.id,
-        materialMap,
-        txCtx,
-      );
-      warnings.push(...materialWarnings);
+      for (const bomItem of publishedBom.items) {
+        const childDemand = createDecimal(String(bomItem.quantity)).times(
+          createDecimal(item.quantity),
+        );
+        await reserveMaterialRecursive(
+          order.id,
+          bomItem.materialId,
+          childDemand,
+          txCtx,
+          warnings,
+        );
+      }
     }
-
-    // 缺料预警
 
     await auditService.log(ctx.operatorId, "Order", order.id, "SAMPLE_DONE", {
       field: "status",
@@ -844,50 +950,37 @@ export const createOrderApplication = (prisma: PrismaClient) => {
             message: `入库数量超限！需求: ${totalQty.toString()}, 已入库: ${fulfilled.toString()}, 本次: ${qty.toString()}`,
           });
         }
-        // 查询本订单对该产品的预留和调配量
-        const reservations = await reservationService.findByOrderId(
-          orderId,
-          txCtx,
-        );
-        const orderReserved = reservations.data
-          .filter(
-            (r: any) =>
-              r.productId === orderItem.productId &&
-              r.type === "PRODUCT_RESERVE",
-          )
-          .reduce((sum: IDecimal, r: any) => {
-            return sum.plus(
-              createDecimal(String(r.quantity)).minus(
-                createDecimal(String(r.released)),
-              ),
-            );
-          }, createDecimal(0));
-        const orderAllocated = reservations.data
-          .filter(
-            (r: any) =>
-              r.productId === orderItem.productId && r.type === "ALLOCATE",
-          )
-          .reduce((sum: IDecimal, r: any) => {
-            return sum.plus(
-              createDecimal(String(r.quantity)).minus(
-                createDecimal(String(r.released)),
-              ),
-            );
-          }, createDecimal(0));
 
-        // 防超完工校验
+        // ==================== 软警告：完工数不足 ====================
         const producedQty = createDecimal(String(orderItem.producedQty || 0));
-        const effectiveProduced = producedQty
-          .plus(orderReserved)
-          .plus(orderAllocated);
+        const completionWarning = qty.gt(producedQty)
+          ? `完工数 ${producedQty.toString()} 小于本次入库数 ${qty.toString()}`
+          : undefined;
 
-        if (fulfilled.plus(qty).gt(effectiveProduced)) {
-          throw createError({
-            statusCode: 400,
-            message: `入库数量超限！有效完工: ${effectiveProduced.toString()}（生产 ${producedQty.toString()} + 预留 ${orderReserved.toString()} + 调配 ${orderAllocated.toString()}），已入库: ${fulfilled.toString()}，本次: ${qty.toString()}`,
-          });
+        // ==================== 倒冲物料消耗 ====================
+        const warnings: Array<string | ShortageWarning> = [];
+        if (orderItem.bomId) {
+          const bom = await bomService.getById(orderItem.bomId);
+          if (bom) {
+            for (const bomItem of bom.items) {
+              const childDemand = createDecimal(String(bomItem.quantity)).times(
+                qty,
+              );
+              await backflushRecursive(
+                orderId,
+                bomItem.materialId,
+                childDemand,
+                txCtx,
+                warnings,
+                0,
+              );
+            }
+          } else {
+            warnings.push("BOM 不存在或已删除，无法倒冲物料");
+          }
         }
 
+        // ==================== 成品入库 ====================
         const receipt = await receiptService.createReceipt(
           {
             orderId,
@@ -917,7 +1010,6 @@ export const createOrderApplication = (prisma: PrismaClient) => {
           txCtx,
         );
 
-        // 库位库存同步
         if (locationId) {
           await invLocService.addStock(
             orderItem.productId,
@@ -941,41 +1033,207 @@ export const createOrderApplication = (prisma: PrismaClient) => {
           txCtx,
         );
 
-        if (orderItem.bomId) {
-          const materialMap = await receiptService.expandBomMaterials(
-            orderItem.bomId,
-            quantity,
+        await auditService.log(ctx.operatorId, "Order", orderId, "RECEIPT", {
+          remark:
+            `生产入库 ${orderItem.product?.name || orderItem.productId} ×${quantity}，单号 ${receipt.receiptCode}` +
+            (completionWarning ? `，${completionWarning}` : "") +
+            (warnings.length > 0 ? `，倒冲警告: ${warnings.join("; ")}` : ""),
+        });
+
+        return { receipt, warnings, completionWarning };
+      });
+    },
+    //倒冲替代
+    async replaceBomMaterials(ctx: RequestContext, rawdata: unknown) {
+      const { orderItemId, replacements } = rawdata as {
+        orderItemId: string;
+        replacements: Array<{
+          oldMaterialId: string;
+          newMaterialId: string;
+          newQuantity?: number; // 可选，不填默认和旧料一致
+        }>;
+      };
+
+      return prisma.$transaction(async (tx) => {
+        const txCtx = createPrismaTxContext(tx);
+
+        // 1. 查订单明细
+        const orderItem = await orderItemService.findByIdWithProduct(
+          orderItemId,
+          txCtx,
+        );
+        if (!orderItem) {
+          throw createError({ statusCode: 404, message: "订单明细不存在" });
+        }
+        if (!orderItem.bomId) {
+          throw createError({
+            statusCode: 400,
+            message: "该订单明细无 BOM 快照",
+          });
+        }
+
+        // 2. 查当前 BOM
+        const currentBom = await bomService.getById(orderItem.bomId);
+        if (!currentBom) {
+          throw createError({ statusCode: 404, message: "BOM 不存在" });
+        }
+
+        // 3. 校验替换项，并补全新用量（不填默认旧料用量）
+        const currentMaterialIds = new Set(
+          currentBom.items.map((i: any) => i.materialId),
+        );
+        const normalizedReplacements = replacements.map((r) => {
+          if (!currentMaterialIds.has(r.oldMaterialId)) {
+            throw createError({
+              statusCode: 400,
+              message: `物料 ${r.oldMaterialId} 不在当前 BOM 直接子物料中`,
+            });
+          }
+          const oldItem = currentBom.items.find(
+            (i: any) => i.materialId === r.oldMaterialId,
+          );
+          return {
+            oldMaterialId: r.oldMaterialId,
+            newMaterialId: r.newMaterialId,
+            newQuantity: r.newQuantity ?? Number(oldItem?.quantity || 1),
+          };
+        });
+
+        // 4. 构建新 BOM items（替换指定物料，其余保留）
+        const newItems = currentBom.items.map((item: any) => {
+          const replacement = normalizedReplacements.find(
+            (r) => r.oldMaterialId === item.materialId,
+          );
+          if (replacement) {
+            return {
+              materialId: replacement.newMaterialId,
+              materialName: "",
+              quantity: toPrismaDecimal(createDecimal(replacement.newQuantity)),
+              unit: item.unit,
+              scrapRate:
+                item.scrapRate != null ? String(item.scrapRate) : undefined,
+            };
+          }
+          return {
+            materialId: item.materialId,
+            materialName: item.materialName,
+            quantity: String(item.quantity),
+            unit: item.unit,
+            scrapRate:
+              item.scrapRate != null ? String(item.scrapRate) : undefined,
+          };
+        });
+
+        // 补全新物料名称
+        for (const item of newItems) {
+          if (!item.materialName) {
+            const product = await prisma.product.findUnique({
+              where: { id: item.materialId },
+              select: { name: true },
+            });
+            item.materialName = product?.name || item.materialId;
+          }
+        }
+
+        // 5. 克隆 BOM
+        const seqService = createSequenceService(prisma);
+        const newBomCode = await seqService.getFormattedBomCode();
+        const newBom = await bomService.cloneBom(
+          ctx,
+          {
+            baseBomId: currentBom.id,
+            bomCode: newBomCode,
+            productId: currentBom.productId,
+            bomType: "CUSTOM",
+            orderId: orderItem.orderId,
+          },
+          txCtx,
+        );
+
+        // 6. 替换新 BOM 的 items
+        await bomService.replaceItems(newBom.id, newItems, txCtx);
+
+        // 7. 更新订单明细的 BOM 快照
+        await orderItemService.snapshotBom(
+          orderItemId,
+          newBom.id,
+          newBom.version,
+          txCtx,
+        );
+
+        // 8. 计算未完工数
+        const totalQty = createDecimal(String(orderItem.quantity));
+        const fulfilledQty = createDecimal(String(orderItem.fulfilledQuantity));
+        const remainingQty = totalQty.minus(fulfilledQty);
+
+        // 9. 释放旧料未消耗预留
+        for (const r of normalizedReplacements) {
+          const reservations = await reservationService.findUnconsumed(
+            orderItem.orderId,
+            r.oldMaterialId,
+            "MATERIAL_RESERVE",
             txCtx,
           );
-          // 校验物料库存是否充足
-          for (const [materialId, needed] of materialMap) {
-            const stock = await inventoryService.getAvailableStock(
-              materialId,
+          for (const res of reservations) {
+            const total = createDecimal(String(res.quantity));
+            const consumed = createDecimal(String(res.consumedQty));
+            const released = createDecimal(String(res.released));
+            const available = total.minus(consumed).minus(released);
+            if (available.lte(0)) continue;
+
+            const toRelease = available.lt(remainingQty)
+              ? available
+              : remainingQty;
+            if (toRelease.lte(0)) continue;
+
+            await reservationService.incrementReleased(
+              res.id,
+              toPrismaDecimal(toRelease),
               txCtx,
             );
-            const neededQty = createDecimal(needed.toString());
-            if (!stock || stock.availableQty.lt(neededQty)) {
-              throw createError({
-                statusCode: 400,
-                message: `物料库存不足，无法入库！物料: ${stock?.productName || materialId}，需要: ${neededQty.toString()}，可用: ${stock?.availableQty.toString() || "0"}`,
-              });
-            }
+            await inventoryService.release(
+              {
+                productId: r.oldMaterialId,
+                qty: Number(toRelease.toString()),
+                relatedCode: orderItem.orderId,
+              },
+              txCtx,
+            );
           }
-          await reservationService.consumeMaterials(
-            orderId,
-            materialMap,
+        }
+
+        // 10. 预留新料（软处理，库存不够不阻断）
+        const warnings: string[] = [];
+        for (const r of normalizedReplacements) {
+          const demandQty = createDecimal(r.newQuantity).times(remainingQty);
+          await reserveMaterialRecursive(
+            orderItem.orderId,
+            r.newMaterialId,
+            demandQty,
             txCtx,
+            warnings,
           );
         }
 
-        await auditService.log(ctx.operatorId, "Order", orderId, "RECEIPT", {
-          remark: `生产入库 ${orderItem.product?.name || orderItem.productId} ×${quantity}，单号 ${receipt.receiptCode}`,
-        });
+        // 11. 审计
+        await auditService.log(
+          ctx.operatorId,
+          "Order",
+          orderItem.orderId,
+          "BOM_REPLACE",
+          {
+            remark: `订单明细 ${orderItem.productName} 更换 BOM 物料：${normalizedReplacements
+              .map(
+                (r) =>
+                  `${r.oldMaterialId} → ${r.newMaterialId} ×${r.newQuantity}`,
+              )
+              .join("; ")}`,
+          },
+        );
 
-        return receipt;
+        return { newBomId: newBom.id, warnings };
       });
     },
-
     async shipOrder(ctx: RequestContext, rawdata: unknown) {
       const { orderId, items } = rawdata as {
         orderId: string;
@@ -1273,6 +1531,85 @@ export const createOrderApplication = (prisma: PrismaClient) => {
           "MISC_COST_DELETE",
           {
             remark: "删除杂项费用",
+          },
+        );
+
+        return { success: true };
+      });
+    },
+
+    async substituteMaterial(ctx: RequestContext, rawdata: unknown) {
+      const { productId, substituteProductId, quantity, remark } = rawdata as {
+        productId: string; // 缺口物料 ID
+        substituteProductId: string; // 替代料 ID
+        quantity: number; // 替代数量
+        remark?: string;
+      };
+
+      return prisma.$transaction(async (tx) => {
+        const txCtx = createPrismaTxContext(tx);
+
+        // 1. 校验替代料库存
+        const stock = await inventoryService.getAvailableStock(
+          substituteProductId,
+          txCtx,
+        );
+        if (!stock || stock.availableQty.lt(createDecimal(quantity))) {
+          throw createError({
+            statusCode: 400,
+            message: `替代料库存不足，当前可用: ${stock?.availableQty.toString() || "0"}`,
+          });
+        }
+
+        // 2. 扣减替代料库存
+        const result = await inventoryService.deduct(
+          {
+            productId: substituteProductId,
+            quantity,
+            type: "PRODUCTION_OUT",
+          },
+          txCtx,
+        );
+
+        // 3. 写库存流水，记录替代关系
+        const logEntry = await invLogService.createLog(
+          {
+            productId: substituteProductId,
+            type: "PRODUCTION_OUT",
+            quantity: toPrismaDecimal(result.changedQty),
+            beforeQty: toPrismaDecimal(result.beforeQty),
+            afterQty: toPrismaDecimal(result.afterQty),
+            relatedCode: productId, // 原缺口物料 ID
+            remark: remark || `替代料出库：替代 ${productId} 缺口 ${quantity}`,
+            operatorId: ctx.operatorId,
+          },
+          txCtx,
+        );
+
+        // 4. 记成本
+        await costService.recordOutboundCost(
+          {
+            inventoryLogId: logEntry.id,
+            productId: substituteProductId,
+            quantity: toPrismaDecimal(result.changedQty.abs()),
+            direction: "OUT",
+            sourceType: "PRODUCTION",
+            remark: remark || `替代 ${productId}`,
+          },
+          txCtx,
+        );
+
+        // 5. 审计
+        await auditService.log(
+          ctx.operatorId,
+          "Inventory",
+          substituteProductId,
+          "SUBSTITUTE",
+          {
+            field: "quantity",
+            oldValue: result.beforeQty.toString(),
+            newValue: result.afterQty.toString(),
+            remark: `替代料出库 ${quantity}，替代物料 ${productId}`,
           },
         );
 

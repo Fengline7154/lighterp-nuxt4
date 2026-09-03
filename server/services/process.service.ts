@@ -110,5 +110,79 @@ export const createProcessService = (prisma: PrismaClient) => {
         }
       });
     },
+    /** 保存订单工序计划（增删改） */
+    async saveOrderPlans(
+      orderId: string,
+      orderItemId: string,
+      plans: Array<{
+        id?: string; // 有 id 表示更新，无 id 表示新增
+        processId?: string | null;
+        sequence: number;
+        processName: string;
+        wageType?: "HOURLY" | "PIECE";
+        standardHours?: number | string;
+        hourlyRate?: number | string;
+        unitPrice?: number | string;
+      }>,
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        // 1. 查现有工序计划
+        const existing = await planRepo.findByOrderItemId(orderItemId, txCtx);
+        const existingIds = new Set(existing.map((p: any) => p.id));
+
+        // 2. 处理提交的 plans
+        const submittedIds = new Set(
+          plans.filter((p) => p.id).map((p) => p.id as string),
+        );
+
+        // 3. 删除未提交的（前端删掉的）
+        for (const oldPlan of existing) {
+          if (!submittedIds.has(oldPlan.id)) {
+            await planRepo.delete(oldPlan.id, txCtx);
+          }
+        }
+
+        // 4. 新增或更新
+        for (const plan of plans) {
+          const planData = {
+            processId: plan.processId || null,
+            sequence: plan.sequence,
+            processName: plan.processName,
+            wageType: plan.wageType || "HOURLY",
+            standardHours:
+              plan.standardHours != null
+                ? toPrismaDecimal(createDecimal(plan.standardHours))
+                : undefined,
+            hourlyRate:
+              plan.hourlyRate != null
+                ? toPrismaDecimal(createDecimal(plan.hourlyRate))
+                : undefined,
+            unitPrice:
+              plan.unitPrice != null
+                ? toPrismaDecimal(createDecimal(plan.unitPrice))
+                : undefined,
+          };
+
+          if (!plan.id) {
+            const orderItem = await prisma.orderItem.findUnique({
+              where: { id: orderItemId },
+              select: { quantity: true },
+            });
+            await planRepo.create(
+              {
+                orderId,
+                orderItemId,
+                ...planData,
+                assignedQty: orderItem ? String(orderItem.quantity) : "0",
+              },
+              txCtx,
+            );
+          }
+        }
+
+        return planRepo.findByOrderItemId(orderItemId, txCtx);
+      });
+    },
   };
 };

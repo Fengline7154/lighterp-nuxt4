@@ -43,7 +43,15 @@ export const createOrderItemService = (prisma: PrismaClient) => {
         );
       });
     },
-
+    /** 按订单 ID 查询所有已锁定 BOM 的明细 ID（领料校验专用） */
+    async findBomIdsByOrderId(orderId: string, tx?: TxContext) {
+      const client = tx?.prisma ?? prisma;
+      const items = await client.orderItem.findMany({
+        where: { orderId, bomId: { not: null } },
+        select: { id: true, bomId: true },
+      });
+      return items.map((i) => ({ id: i.id, bomId: i.bomId! }));
+    },
     /** 更新 shippedQuantity */
     async incrementShippedQty(
       id: string,
@@ -58,7 +66,6 @@ export const createOrderItemService = (prisma: PrismaClient) => {
         );
       });
     },
-
     /** 按订单 ID 查询所有明细 */
     async findByOrderId(orderId: string, tx?: TxContext) {
       return repo.findByOrderId(orderId, tx);

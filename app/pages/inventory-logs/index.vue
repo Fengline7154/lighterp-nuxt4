@@ -363,8 +363,6 @@ const typeMap: Record<string, string> = {
   CHECK_OUT: "盘亏出库",
   REVERSAL: "红冲",
   OTHER: "其他",
-  ALLOCATE: "调配",
-  DEALLOCATE: "撤回调配",
 };
 
 const typeLabel = (t: string) => typeMap[t] || t;
@@ -384,7 +382,6 @@ const typeIcon = (t: string) => {
     TRANSFER_OUT: "📦",
     CHECK_OUT: "➖",
     REVERSAL: "↩️",
-    ALLOCATE: "📋",
   };
   return m[t] || "📌";
 };

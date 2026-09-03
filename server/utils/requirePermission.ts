@@ -39,9 +39,13 @@ export async function requirePermission(event: H3Event, requiredPerm?: string) {
 
     // 检查权限
     if (requiredPerm) {
+      const requiredPerms = Array.isArray(requiredPerm)
+        ? requiredPerm
+        : [requiredPerm];
+
       if (
         !user.permissions?.includes("*") &&
-        !user.permissions?.includes(requiredPerm)
+        !requiredPerms.some((perm) => user.permissions?.includes(perm))
       ) {
         throw createError({ statusCode: 403, message: "权限不足" });
       }

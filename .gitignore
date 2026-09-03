@@ -17,10 +17,6 @@ node_modules/
 
 # ============ 依赖和包管理 ============
 node_modules/
-package-lock.json
-yarn.lock
-pnpm-lock.yaml
-bun.lockb
 
 # ============ 环境变量 ============
 .env
@@ -127,3 +123,4 @@ erp-context.xml
 repomix.config.json
 vitest.config.ts
 vitest.setup.ts
+.repomixignore
