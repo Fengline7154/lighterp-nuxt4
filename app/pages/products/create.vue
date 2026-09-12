@@ -112,6 +112,46 @@
         </button>
       </form>
     </div>
+    <!-- 重名提醒弹窗 -->
+    <div
+      v-if="showDuplicateModal"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showDuplicateModal = false"
+      />
+      <div class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-md">
+        <h2 class="text-lg font-bold mb-2 text-amber-600">⚠️ 发现同名产品</h2>
+        <p class="text-sm text-slate-500 mb-4">已存在以下同名产品：</p>
+        <div class="space-y-2 mb-4 max-h-[40vh] overflow-y-auto">
+          <div
+            v-for="p in duplicateProducts"
+            :key="p.id"
+            class="bg-amber-50 border border-amber-200 rounded-lg p-3"
+          >
+            <div class="text-sm font-mono">{{ p.code }}</div>
+            <div class="text-xs text-slate-500">{{ p.name }}</div>
+            <div class="text-xs text-slate-400">规格：{{ p.spec || "无" }}</div>
+          </div>
+        </div>
+        <p class="text-sm text-slate-600 mb-4">是否继续创建同名产品？</p>
+        <div class="flex gap-2">
+          <button
+            @click="confirmDuplicateCreate"
+            class="flex-1 min-h-[44px] bg-amber-500 text-white py-2 rounded-lg hover:bg-amber-600 transition text-sm"
+          >
+            继续创建
+          </button>
+          <button
+            @click="showDuplicateModal = false"
+            class="flex-1 min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -152,8 +192,41 @@ const addTag = () => {
   tagInput.value = "";
 };
 
+const showDuplicateModal = ref(false);
+const duplicateProducts = ref<any[]>([]);
+const duplicateName = ref("");
+
 const handleCreate = async () => {
   if (!form.name.trim()) return toast.error("产品名称不能为空");
+
+  try {
+    // 查同名产品
+    const existing = await $fetch<any>("/api/products", {
+      query: { keyword: form.name.trim(), limit: 10 },
+    });
+    const sameNameProducts = (existing?.data || []).filter(
+      (p: any) => p.name === form.name.trim(),
+    );
+
+    if (sameNameProducts.length > 0) {
+      duplicateName.value = form.name.trim();
+      duplicateProducts.value = sameNameProducts;
+      showDuplicateModal.value = true;
+      return;
+    }
+
+    // 无重名，直接创建
+    await apiFetch("/api/products", { method: "POST", body: form });
+    toast.success("产品创建成功");
+    await navigateTo("/products");
+  } catch (e: any) {
+    toast.error(e, "产品创建失败");
+  }
+};
+
+// 用户确认继续创建
+const confirmDuplicateCreate = async () => {
+  showDuplicateModal.value = false;
   try {
     await apiFetch("/api/products", { method: "POST", body: form });
     toast.success("产品创建成功");

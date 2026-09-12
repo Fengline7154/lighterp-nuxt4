@@ -4,7 +4,7 @@ import { WageType } from "~~/prisma/generated/client";
 export const submitProductionLogSchema = z.object({
   planId: z.uuid("无效的工序计划ID"),
   orderId: z.uuid("无效的订单ID"),
-  productId: z.uuid("无效的产品ID"),
+  productId: z.uuid("无效的产品ID").optional(),
   processId: z.uuid().optional(),
   processName: z.string().min(1, "工序名称不能为空"),
   completedQty: z.coerce.number().positive("完成数量必须大于0"),

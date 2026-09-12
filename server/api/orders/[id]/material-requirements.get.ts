@@ -1,6 +1,5 @@
 // server/api/orders/[id]/material-requirements.get.ts
 import { usePrisma } from "~~/server/config/prisma";
-import { createReceiptService } from "~~/server/services/receipt.service";
 import { createBomRepository } from "~~/server/repositories/postgres/bom.repository";
 import { createOrderReservationRepository } from "~~/server/repositories/postgres/order-reservation.repository";
 import { requirePermission } from "~~/server/utils/requirePermission";
@@ -27,7 +26,6 @@ export default defineEventHandler(async (event) => {
   });
   if (!order) throw createError({ statusCode: 404 });
 
-  const receiptService = createReceiptService(prisma);
   const bomRepo = createBomRepository(prisma);
   const reservationRepo = createOrderReservationRepository(prisma);
 
@@ -39,7 +37,8 @@ export default defineEventHandler(async (event) => {
   const orderReservedMap = new Map<string, number>();
   for (const r of reservations.data) {
     if (r.type === "MATERIAL_RESERVE") {
-      const net = Number(r.quantity) - Number(r.released);
+      const net =
+        Number(r.quantity) - Number(r.consumedQty) - Number(r.released);
       orderReservedMap.set(
         r.productId,
         (orderReservedMap.get(r.productId) || 0) + net,
@@ -47,7 +46,7 @@ export default defineEventHandler(async (event) => {
     }
   }
 
-  // 2. BOM 展开，汇总物料需求
+  // 2. 只查 BOM 直接子物料需求（不展到底）
   const materialMap = new Map<
     string,
     { productName: string; demand: number }
@@ -60,18 +59,30 @@ export default defineEventHandler(async (event) => {
       if (publishedBom) bomId = publishedBom.id;
     }
 
-    if (bomId) {
-      const bomMaterials = await receiptService.expandBomMaterials(
-        bomId,
-        Number(item.quantity),
-      );
-      for (const [materialId, demand] of bomMaterials) {
-        const existing = materialMap.get(materialId);
-        materialMap.set(materialId, {
-          productName: "",
-          demand: (existing?.demand || 0) + Number(demand.toString()),
-        });
-      }
+    if (!bomId) continue;
+
+    // 查 BOM 直接子物料
+    const bom = await prisma.bom.findUnique({
+      where: { id: bomId },
+      include: {
+        items: {
+          include: {
+            material: { select: { name: true } },
+          },
+        },
+      },
+    });
+
+    if (!bom) continue;
+
+    for (const bomItem of bom.items) {
+      const demand = Number(bomItem.quantity) * Number(item.quantity);
+      const materialId = bomItem.materialId;
+      const existing = materialMap.get(materialId);
+      materialMap.set(materialId, {
+        productName: bomItem.material?.name || bomItem.materialName,
+        demand: (existing?.demand || 0) + demand,
+      });
     }
   }
 
@@ -79,7 +90,7 @@ export default defineEventHandler(async (event) => {
   const productIds = [...materialMap.keys()];
   const products = await prisma.product.findMany({
     where: { id: { in: productIds } },
-    select: { id: true, name: true, unit: true },
+    select: { id: true, name: true, unit: true, category: true },
   });
   const productMap = new Map(products.map((p) => [p.id, p]));
 
@@ -111,6 +122,7 @@ export default defineEventHandler(async (event) => {
       productId: materialId,
       productName: p?.name || data.productName || materialId,
       unit: p?.unit || "",
+      category: p?.category || "",
       demand: demandNum,
       totalStock,
       availableQty,

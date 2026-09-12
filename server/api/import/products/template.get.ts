@@ -7,7 +7,7 @@ export default defineEventHandler(async (event) => {
   const headers: string[] = ["名称", "规格", "单位", "类别", "包装单位"];
 
   const examples: string[][] = [
-    ["帐篷布(示例,需删除本行)", "210D牛津布", "M", "原材料", "卷"],
+    ["帐篷布(示例,可删除本行)", "210D牛津布", "M", "原材料", "卷"],
   ];
 
   const allRows: string[][] = [headers, ...examples];

@@ -80,7 +80,7 @@
               预留量
             </th>
             <th
-              class="text-right px-4 py-3 text-xs font-medium text-slate-500 uppercase"
+              class="text-center px-4 py-3 text-xs font-medium text-slate-500 uppercase"
             >
               缺口
             </th>
@@ -110,53 +110,49 @@
             <td class="px-4 py-3 text-sm text-right font-medium">
               {{ inv.quantity }}
             </td>
-            <td class="px-4 py-3 text-sm text-right font-medium text-blue-600">
-              {{ inv.availableQty ?? "0" }}
+            <td class="px-4 py-3 text-sm text-right font-medium">
+              <span
+                v-if="Number(inv.availableQty) < 0"
+                class="text-red-500 font-bold"
+              >
+                {{ inv.availableQty }}
+                <span class="text-[10px] ml-1">(库存不足)</span>
+              </span>
+              <span v-else class="text-blue-600">{{
+                inv.availableQty ?? "0"
+              }}</span>
             </td>
             <td class="px-4 py-3 text-sm text-right text-slate-500">
               {{ inv.reservedQty || "0" }}
             </td>
-            <td class="px-4 py-3 text-sm text-right">
-              <span
-                v-if="Number(inv.shortageQty) > 0"
-                class="text-red-500 font-medium"
-              >
-                {{ inv.shortageQty }}
+            <td class="px-4 py-3 text-sm text-center">
+              <span v-if="Number(inv.shortageQty) > 0" class="font-medium">
+                <span class="text-red-500">{{ inv.shortageQty }}</span>
+                <span
+                  v-if="inv.category === 'SEMI'"
+                  class="ml-1 text-xs px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded"
+                  >需生产</span
+                >
+                <span
+                  v-else
+                  class="ml-1 text-xs px-1.5 py-0.5 bg-red-100 text-red-700 rounded"
+                  >待采购</span
+                >
               </span>
               <span v-else class="text-slate-400">0</span>
             </td>
             <td class="px-4 py-3 text-sm text-slate-500">
               {{ formatDate(inv.updatedAt) }}
             </td>
+
+            <!-- 桌面端操作列 -->
             <td class="px-4 py-3 text-sm text-center">
-              <div class="flex items-center justify-center gap-1">
+              <div class="relative inline-block">
                 <button
-                  @click="
-                    openActionModal('row', 'in', {
-                      product: inv,
-                      type: 'PRODUCTION_IN',
-                    })
-                  "
-                  class="min-h-[32px] px-2 py-1 bg-teal-50 text-teal-700 rounded text-xs hover:bg-teal-100 transition"
+                  @click.stop="toggleDesktopMenu(inv.id, $event)"
+                  class="min-h-[32px] px-3 py-1 bg-slate-100 text-slate-600 rounded text-xs hover:bg-slate-200 transition"
                 >
-                  生产入库
-                </button>
-                <button
-                  @click="
-                    openActionModal('row', 'out', {
-                      product: inv,
-                      type: 'PRODUCTION_OUT',
-                    })
-                  "
-                  class="min-h-[32px] px-2 py-1 bg-purple-50 text-purple-700 rounded text-xs hover:bg-purple-100 transition"
-                >
-                  生产领料
-                </button>
-                <button
-                  @click="openActionSheet(inv)"
-                  class="min-h-[32px] px-2 py-1 bg-slate-100 text-slate-500 rounded text-xs hover:bg-slate-200 transition"
-                >
-                  ···
+                  操作 ▾
                 </button>
               </div>
             </td>
@@ -164,7 +160,23 @@
         </tbody>
       </table>
     </div>
-
+    <Teleport to="body">
+      <div
+        v-if="desktopMenuId"
+        :style="desktopMenuStyle"
+        data-desktop-menu
+        class="fixed bg-white border border-slate-200 rounded-lg shadow-lg z-[9999] py-1 min-w-[120px]"
+      >
+        <button
+          v-for="opt in allActions"
+          :key="opt.type"
+          @click="selectDesktopAction(opt.type)"
+          class="block w-full text-left px-4 py-2 text-sm hover:bg-slate-50 min-h-[36px]"
+        >
+          {{ opt.label }}
+        </button>
+      </div>
+    </Teleport>
     <!-- 移动端卡片 -->
     <div class="md:hidden space-y-3">
       <div
@@ -173,22 +185,31 @@
         class="bg-white rounded-xl shadow p-4 space-y-2"
       >
         <div class="flex justify-between items-center">
-          <span class="font-mono text-sm">
-            {{ inv.productCode || inv.productId?.substring(0, 8) + "..." }}
-          </span>
-          <span class="text-xs text-slate-400">
-            {{ formatDate(inv.updatedAt) }}
-          </span>
+          <span class="font-mono text-sm">{{
+            inv.productCode || inv.productId?.substring(0, 8) + "..."
+          }}</span>
+          <span class="text-xs text-slate-400">{{
+            formatDate(inv.updatedAt)
+          }}</span>
         </div>
         <div class="font-medium">{{ inv.productName }}</div>
-        <div class="grid grid-cols-3 gap-2 text-center text-sm">
+        <div class="grid grid-cols-4 gap-2 text-center text-sm">
           <div>
             <span class="text-xs text-slate-400 block">总库存</span>
             {{ inv.quantity }}
           </div>
           <div>
             <span class="text-xs text-slate-400 block">可用</span>
-            <span class="text-blue-600">{{ inv.availableQty ?? "0" }}</span>
+            <span
+              v-if="Number(inv.availableQty) < 0"
+              class="text-red-500 font-bold"
+            >
+              {{ inv.availableQty }}
+              <span class="text-[10px]">(不足)</span>
+            </span>
+            <span v-else class="text-blue-600">{{
+              inv.availableQty ?? "0"
+            }}</span>
           </div>
           <div>
             <span class="text-xs text-slate-400 block">预留</span>
@@ -196,42 +217,28 @@
           </div>
           <div>
             <span class="text-xs text-slate-400 block">缺口</span>
-            <span v-if="Number(inv.shortageQty) > 0" class="text-red-500">{{
-              inv.shortageQty
-            }}</span>
+            <span v-if="Number(inv.shortageQty) > 0">
+              <span class="text-red-500">{{ inv.shortageQty }}</span>
+              <span
+                v-if="inv.category === 'SEMI'"
+                class="ml-0.5 text-[10px] px-1 py-0.5 bg-amber-100 text-amber-700 rounded"
+                >需生产</span
+              >
+              <span
+                v-else
+                class="ml-0.5 text-[10px] px-1 py-0.5 bg-red-100 text-red-700 rounded"
+                >待采购</span
+              >
+            </span>
             <span v-else>0</span>
           </div>
         </div>
-        <div class="flex gap-2 pt-2 border-t flex-wrap">
-          <button
-            @click="
-              openActionModal('row', 'in', {
-                product: inv,
-                type: 'PRODUCTION_IN',
-              })
-            "
-            class="min-h-[36px] px-2 py-1 bg-teal-50 text-teal-700 rounded text-xs"
-          >
-            生产入库
-          </button>
-          <button
-            @click="
-              openActionModal('row', 'out', {
-                product: inv,
-                type: 'PRODUCTION_OUT',
-              })
-            "
-            class="min-h-[36px] px-2 py-1 bg-purple-50 text-purple-700 rounded text-xs"
-          >
-            生产领料
-          </button>
-          <button
-            @click="openActionSheet(inv)"
-            class="min-h-[36px] px-2 py-1 bg-slate-100 text-slate-500 rounded text-xs"
-          >
-            更多···
-          </button>
-        </div>
+        <button
+          @click="openActionSheet(inv)"
+          class="w-full min-h-[36px] px-3 py-1.5 bg-slate-100 text-slate-600 rounded-lg text-xs hover:bg-slate-200 transition border-t mt-2"
+        >
+          操作
+        </button>
       </div>
     </div>
 
@@ -260,29 +267,29 @@
       </button>
     </div>
 
-    <!-- 移动端更多操作面板 -->
+    <!-- 移动端操作面板 -->
     <div
       v-if="showActionSheet"
       class="fixed inset-0 z-50 flex items-end justify-center"
       @click.self="showActionSheet = false"
     >
       <div
-        class="bg-white rounded-t-xl shadow-xl w-full max-h-[60vh] overflow-y-auto p-4 space-y-1"
+        class="bg-white rounded-t-xl shadow-xl w-full max-h-[70vh] overflow-y-auto p-4 space-y-1"
       >
-        <h3 class="font-semibold text-sm mb-2">
+        <h3 class="font-semibold text-base mb-3">
           {{ actionSheetInv?.productName }}
         </h3>
         <button
           v-for="opt in allActions"
           :key="opt.type"
           @click="selectSheetAction(opt.type)"
-          class="w-full text-left px-4 py-3 text-sm hover:bg-slate-50 rounded-lg min-h-[44px]"
+          class="w-full text-left px-4 py-3.5 text-base hover:bg-slate-50 rounded-lg min-h-[52px]"
         >
           {{ opt.label }}
         </button>
         <button
           @click="showActionSheet = false"
-          class="w-full text-center py-3 text-sm text-slate-400 border-t mt-2"
+          class="w-full text-center py-3.5 text-base text-slate-400 border-t mt-2 min-h-[52px]"
         >
           取消
         </button>
@@ -311,13 +318,13 @@
           <button
             v-if="!actionContext.productId"
             @click="showProductPicker = true"
-            class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm text-left text-slate-400"
+            class="w-full min-h-[48px] border border-slate-300 rounded-lg px-4 py-2 text-base text-left text-slate-400"
           >
             点击选择产品
           </button>
           <div
             v-else
-            class="w-full min-h-[44px] border border-slate-200 rounded-lg px-4 py-2 text-sm bg-slate-50 flex items-center justify-between"
+            class="w-full min-h-[48px] border border-slate-200 rounded-lg px-4 py-2 text-base bg-slate-50 flex items-center justify-between"
           >
             <span>
               <span class="font-mono text-xs text-slate-400 mr-2">{{
@@ -337,23 +344,21 @@
 
         <!-- 类型选择 -->
         <div class="mb-4">
-          <label class="block text-sm font-medium text-slate-700 mb-1">
-            {{ actionDirection === "in" ? "入库类型" : "出库类型" }}
-          </label>
+          <label class="block text-sm font-medium text-slate-700 mb-1">{{
+            actionDirection === "in" ? "入库类型" : "出库类型"
+          }}</label>
           <select
             v-model="actionContext.type"
             :disabled="actionMode === 'row'"
-            class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none transition disabled:bg-slate-100 disabled:text-slate-500"
+            class="w-full min-h-[48px] border border-slate-300 rounded-lg px-4 py-2 text-base bg-white focus:ring-2 focus:ring-blue-500 outline-none transition disabled:bg-slate-100 disabled:text-slate-500"
           >
             <template v-if="actionDirection === 'in'">
               <option value="PURCHASE_IN">采购入库</option>
-              <option value="PRODUCTION_IN">生产入库</option>
               <option value="RETURN_IN">退货入库</option>
               <option value="CHECK_IN">盘盈入库</option>
             </template>
             <template v-else>
               <option value="SALES_OUT">销售出库</option>
-              <option value="PRODUCTION_OUT">生产领料</option>
               <option value="SAMPLE_OUT">打样领料</option>
               <option value="SCRAP_OUT">报废出库</option>
               <option value="CHECK_OUT">盘亏出库</option>
@@ -376,7 +381,7 @@
             type="number"
             min="0"
             step="0.01"
-            class="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm min-h-[44px]"
+            class="w-full border border-slate-300 rounded-lg px-4 py-3 text-base min-h-[48px]"
           />
         </div>
 
@@ -390,62 +395,39 @@
               v-model.number="actionContext.quantity"
               type="number"
               min="1"
-              class="flex-1 border border-slate-300 rounded-lg px-4 py-3 text-sm min-h-[44px] focus:ring-2 focus:ring-blue-500 outline-none transition"
+              class="flex-1 border border-slate-300 rounded-lg px-4 py-3 text-base min-h-[48px] focus:ring-2 focus:ring-blue-500 outline-none transition"
             />
             <span
               v-if="actionContext.unit"
-              class="text-sm font-bold text-slate-900 min-w-[40px]"
+              class="text-base font-bold text-slate-900 min-w-[40px]"
+              >{{ actionContext.unit }}</span
             >
-              {{ actionContext.unit }}
-            </span>
           </div>
         </div>
 
-        <!-- 关联订单 -->
+        <!-- 关联单号（仅销售出库/打样领料需要，可选） -->
         <div
-          v-if="
-            [
-              'PRODUCTION_IN',
-              'PRODUCTION_OUT',
-              'SALES_OUT',
-              'SAMPLE_OUT',
-            ].includes(actionContext.type)
-          "
+          v-if="['SALES_OUT', 'SAMPLE_OUT'].includes(actionContext.type)"
           class="mb-4"
         >
-          <label class="block text-sm font-medium text-slate-700 mb-1">
-            关联订单
-            <span
-              v-if="actionContext.type === 'PRODUCTION_OUT'"
-              class="text-red-500"
-              >*</span
-            >
-            <span v-else class="text-slate-400 text-xs">(可选)</span>
-          </label>
-          <div class="flex gap-2">
-            <input
-              v-model="actionContext.relatedCode"
-              :disabled="actionContext.type === 'PRODUCTION_OUT'"
-              placeholder="选择订单"
-              class="flex-1 border border-slate-300 rounded-lg px-4 py-3 text-sm min-h-[44px] disabled:bg-slate-100"
-            />
-            <button
-              @click="openOrderPicker"
-              class="min-h-[44px] min-w-[44px] px-3 border border-slate-300 rounded-lg text-slate-500 hover:text-blue-500 transition text-sm"
-            >
-              +
-            </button>
-          </div>
+          <label class="block text-sm font-medium text-slate-700 mb-1"
+            >关联单号 <span class="text-slate-400 text-xs">(可选)</span></label
+          >
+          <input
+            v-model="actionContext.relatedCode"
+            placeholder="订单号/领料单号"
+            class="w-full border border-slate-300 rounded-lg px-4 py-3 text-base min-h-[48px]"
+          />
         </div>
 
         <!-- 库位 -->
         <div class="mb-4">
-          <label class="block text-sm font-medium text-slate-700 mb-1">
-            库位 <span class="text-slate-400 text-xs">(可选)</span>
-          </label>
+          <label class="block text-sm font-medium text-slate-700 mb-1"
+            >库位 <span class="text-slate-400 text-xs">(可选)</span></label
+          >
           <select
             v-model="actionContext.locationId"
-            class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
+            class="w-full min-h-[48px] border border-slate-300 rounded-lg px-4 py-2 text-base bg-white focus:ring-2 focus:ring-blue-500 outline-none transition"
           >
             <option value="">不指定库位</option>
             <option
@@ -460,28 +442,28 @@
 
         <!-- 备注 -->
         <div class="mb-4">
-          <label class="block text-sm font-medium text-slate-700 mb-1">
-            备注
-            <span v-if="isRemarkRequired" class="text-red-500">*</span>
-          </label>
+          <label class="block text-sm font-medium text-slate-700 mb-1"
+            >备注
+            <span v-if="isRemarkRequired" class="text-red-500">*</span></label
+          >
           <textarea
             v-model="actionContext.remark"
             rows="2"
             :placeholder="remarkPlaceholder"
-            class="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm focus:ring-2 focus:ring-blue-500 outline-none transition"
+            class="w-full border border-slate-300 rounded-lg px-4 py-3 text-base focus:ring-2 focus:ring-blue-500 outline-none transition"
           ></textarea>
         </div>
 
         <div class="flex gap-2">
           <button
             @click="handleSubmit"
-            class="flex-1 min-h-[44px] bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 transition text-sm"
+            class="flex-1 min-h-[52px] bg-blue-500 text-white py-2 rounded-lg hover:bg-blue-600 transition text-base"
           >
             确认
           </button>
           <button
             @click="showActionModal = false"
-            class="flex-1 min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
+            class="flex-1 min-h-[52px] border py-2 rounded-lg hover:bg-slate-50 transition text-base"
           >
             取消
           </button>
@@ -489,94 +471,51 @@
       </div>
     </div>
 
-    <!-- 库位查询弹窗 -->
+    <!-- 产品选择弹窗 -->
     <div
-      v-if="showLocationSearch"
+      v-if="showProductPicker"
       class="fixed inset-0 z-50 flex items-center justify-center p-4"
     >
       <div
         class="absolute inset-0 bg-black/30"
-        @click="showLocationSearch = false"
+        @click="showProductPicker = false"
       />
       <div
         class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-lg max-h-[80vh] flex flex-col"
       >
-        <h2 class="text-lg font-bold mb-4">库位查询</h2>
+        <h2 class="text-lg font-bold mb-4">选择产品</h2>
         <input
-          v-model="locationSearch"
+          v-model="productSearch"
           placeholder="搜索产品..."
-          class="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm mb-4 min-h-[44px]"
+          class="w-full border border-slate-300 rounded-lg px-4 py-3 text-base mb-4 min-h-[48px]"
         />
-
-        <div
-          v-if="!selectedLocationProduct"
-          class="flex-1 overflow-y-auto space-y-1"
-        >
+        <div class="flex-1 overflow-y-auto space-y-1">
           <button
-            v-for="p in filteredLocationProducts"
-            :key="p.id"
-            @click="openProductLocations(p)"
-            class="w-full text-left px-4 py-3 rounded-lg text-sm hover:bg-blue-50 transition border"
+            v-for="p in filteredProductOptions"
+            :key="p.value"
+            @click="selectProduct(p)"
+            class="w-full text-left px-4 py-3 rounded-lg text-base hover:bg-blue-50 transition"
           >
             <span class="font-mono text-xs text-slate-400 mr-2">{{
-              p.productCode || p.productId
+              p.code
             }}</span>
-            <span class="font-medium">{{ p.productName }}</span>
-            <span class="text-xs text-slate-400 ml-2"
-              >总库存 {{ p.quantity }}</span
-            >
+            <span>{{ p.label }}</span>
           </button>
           <p
-            v-if="filteredLocationProducts.length === 0"
+            v-if="filteredProductOptions.length === 0"
             class="text-center text-slate-400 py-8"
           >
             无匹配产品
           </p>
         </div>
-
-        <div v-else class="flex-1 overflow-y-auto">
-          <button
-            @click="selectedLocationProduct = null"
-            class="text-sm text-blue-500 mb-2"
-          >
-            &larr; 返回产品列表
-          </button>
-          <p class="font-medium text-sm mb-2">
-            {{ selectedLocationProduct.productName }}
-          </p>
-          <div class="space-y-1">
-            <div
-              v-for="loc in selectedLocationDetails"
-              :key="loc.locationId"
-              class="flex justify-between text-sm py-1 border-b last:border-0"
-            >
-              <span
-                >{{ loc.location?.code || loc.locationId }}
-                {{ loc.location?.name || "" }}</span
-              >
-              <span class="font-medium">{{ loc.quantity }}</span>
-            </div>
-            <p
-              v-if="selectedLocationDetails.length === 0"
-              class="text-slate-400 text-sm"
-            >
-              该产品未分配库位
-            </p>
-          </div>
-        </div>
-
         <button
-          @click="
-            showLocationSearch = false;
-            selectedLocationProduct = null;
-          "
-          class="mt-4 w-full min-h-[44px] border py-2 rounded-lg text-sm"
+          @click="showProductPicker = false"
+          class="mt-4 w-full min-h-[52px] border py-2 rounded-lg text-base"
         >
           关闭
         </button>
       </div>
     </div>
-
     <!-- 调拨弹窗 -->
     <div
       v-if="showTransferModal"
@@ -596,7 +535,7 @@
           >
           <select
             v-model="transferFromLocationId"
-            class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm bg-white"
+            class="w-full min-h-[48px] border border-slate-300 rounded-lg px-4 py-2 text-base bg-white"
           >
             <option value="">选择源库位</option>
             <option
@@ -620,7 +559,7 @@
           >
           <select
             v-model="transferToLocationId"
-            class="w-full min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm bg-white"
+            class="w-full min-h-[48px] border border-slate-300 rounded-lg px-4 py-2 text-base bg-white"
           >
             <option value="">选择目标库位</option>
             <option
@@ -648,122 +587,29 @@
               type="number"
               min="0.0001"
               step="0.0001"
-              class="flex-1 min-h-[44px] border border-slate-300 rounded-lg px-4 py-2 text-sm"
+              class="flex-1 min-h-[48px] border border-slate-300 rounded-lg px-4 py-2 text-base"
             />
             <span
               v-if="transferUnit"
-              class="text-sm font-bold text-slate-900 min-w-[40px]"
+              class="text-base font-bold text-slate-900 min-w-[40px]"
+              >{{ transferUnit }}</span
             >
-              {{ transferUnit }}
-            </span>
           </div>
         </div>
         <div class="flex gap-2">
           <button
             @click="handleTransfer"
-            class="flex-1 min-h-[44px] bg-indigo-500 text-white py-2 rounded-lg hover:bg-indigo-600 transition text-sm"
+            class="flex-1 min-h-[52px] bg-indigo-500 text-white py-2 rounded-lg hover:bg-indigo-600 transition text-base"
           >
             确认调拨
           </button>
           <button
             @click="showTransferModal = false"
-            class="flex-1 min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
+            class="flex-1 min-h-[52px] border py-2 rounded-lg hover:bg-slate-50 transition text-base"
           >
             取消
           </button>
         </div>
-      </div>
-    </div>
-
-    <!-- 订单选择弹窗 -->
-    <div
-      v-if="showOrderPicker"
-      class="fixed inset-0 z-[10001] flex items-center justify-center p-4"
-    >
-      <div
-        class="absolute inset-0 bg-black/30"
-        @click="showOrderPicker = false"
-      />
-      <div
-        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-lg max-h-[80vh] flex flex-col"
-      >
-        <h2 class="text-lg font-bold mb-4">选择订单</h2>
-        <input
-          v-model="orderSearch"
-          placeholder="搜索订单号..."
-          class="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm mb-4 min-h-[44px]"
-        />
-        <div class="flex-1 overflow-y-auto space-y-1">
-          <button
-            v-for="o in filteredOrders"
-            :key="o.id"
-            @click="selectOrder(o)"
-            class="w-full text-left px-4 py-3 rounded-lg text-sm hover:bg-blue-50 transition flex justify-between items-center"
-          >
-            <span class="font-mono">{{ o.orderCode }}</span>
-            <span class="text-xs text-slate-400">{{
-              o.customer?.name || "无客户"
-            }}</span>
-          </button>
-          <p
-            v-if="filteredOrders.length === 0"
-            class="text-center text-slate-400 py-8"
-          >
-            无匹配订单
-          </p>
-        </div>
-        <button
-          @click="showOrderPicker = false"
-          class="mt-4 w-full min-h-[44px] border py-2 rounded-lg text-sm"
-        >
-          关闭
-        </button>
-      </div>
-    </div>
-
-    <!-- 产品选择弹窗 -->
-    <div
-      v-if="showProductPicker"
-      class="fixed inset-0 z-50 flex items-center justify-center p-4"
-    >
-      <div
-        class="absolute inset-0 bg-black/30"
-        @click="showProductPicker = false"
-      />
-      <div
-        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-lg max-h-[80vh] flex flex-col"
-      >
-        <h2 class="text-lg font-bold mb-4">选择产品</h2>
-        <input
-          v-model="productSearch"
-          placeholder="搜索产品..."
-          class="w-full border border-slate-300 rounded-lg px-4 py-3 text-sm mb-4 min-h-[44px]"
-        />
-        <div class="flex-1 overflow-y-auto space-y-1">
-          <button
-            v-for="p in filteredProductOptions"
-            :key="p.value"
-            @click="selectProduct(p)"
-            class="w-full text-left px-4 py-3 rounded-lg text-sm hover:bg-blue-50 transition"
-          >
-            <span class="font-mono text-xs text-slate-400 mr-2">{{
-              p.code
-            }}</span>
-            <span>{{ p.label }}</span>
-          </button>
-          <p
-            v-if="filteredProductOptions.length === 0"
-            class="text-center text-slate-400 py-8"
-          >
-            无匹配产品
-          </p>
-        </div>
-        <button
-          @click="showProductPicker = false"
-          class="mt-4 w-full min-h-[44px] border py-2 rounded-lg text-sm"
-        >
-          关闭
-        </button>
       </div>
     </div>
   </div>
@@ -835,12 +681,46 @@ const activeLocations = computed(
 const defaultLocation = computed(() =>
   activeLocations.value.find((l: any) => l.isDefault),
 );
+//桌面端操作列表
 
-const { data: ordersData } = await useFetch(
-  "/api/orders?limit=200&statuses=APPROVED,PRODUCING",
-);
-const orders = computed(() => (ordersData.value as any)?.data || []);
+const desktopMenuId = ref<string | null>(null);
+const desktopMenuStyle = ref<Record<string, string>>({});
 
+const toggleDesktopMenu = (id: string, event: MouseEvent) => {
+  if (desktopMenuId.value === id) {
+    desktopMenuId.value = null;
+    return;
+  }
+  desktopMenuId.value = id;
+  const rect = (event.target as HTMLElement).getBoundingClientRect();
+  desktopMenuStyle.value = {
+    left: `${rect.left}px`,
+    top: `${rect.bottom + 4}px`,
+  };
+};
+
+const selectDesktopAction = (type: string) => {
+  const inv = items.value.find((i: any) => i.id === desktopMenuId.value);
+  desktopMenuId.value = null;
+  if (!inv) return;
+  if (type === "TRANSFER") {
+    openTransfer(inv);
+    return;
+  }
+  const direction = ["PURCHASE_IN", "RETURN_IN", "CHECK_IN"].includes(type)
+    ? "in"
+    : "out";
+  openActionModal("row", direction, { product: inv, type });
+};
+
+onMounted(() => {
+  document.addEventListener("click", (e) => {
+    const target = e.target as HTMLElement;
+    // 如果点击的是菜单内部，不关闭
+    if (target.closest("[data-desktop-menu]")) return;
+    desktopMenuId.value = null;
+  });
+});
 // ==================== 统一操作弹窗 ====================
 const showActionModal = ref(false);
 const actionMode = ref<"row" | "general">("general");
@@ -863,11 +743,9 @@ const actionContext = ref({
 const actionTitle = computed(() => {
   const labels: Record<string, string> = {
     PURCHASE_IN: "采购入库",
-    PRODUCTION_IN: "生产入库",
     RETURN_IN: "退货入库",
     CHECK_IN: "盘盈入库",
     SALES_OUT: "销售出库",
-    PRODUCTION_OUT: "生产领料",
     SAMPLE_OUT: "打样领料",
     SCRAP_OUT: "报废出库",
     CHECK_OUT: "盘亏出库",
@@ -894,11 +772,7 @@ const openActionModal = (
     productId: preset?.product?.productId || "",
     productCode: preset?.product?.productCode || "",
     productName: preset?.product?.productName || "",
-    unit:
-      preset?.product?.unit ||
-      allProducts.value.find((p: any) => p.id === preset?.product?.productId)
-        ?.unit ||
-      "",
+    unit: preset?.product?.unit || "",
     type: preset?.type || (direction === "in" ? "PURCHASE_IN" : "SALES_OUT"),
     quantity: null,
     locationId: defaultLocation.value?.id || "",
@@ -916,8 +790,6 @@ const handleSubmit = async () => {
   if (!ctx.quantity || ctx.quantity <= 0) return toast.error("请输入有效数量");
   if (isRemarkRequired.value && !ctx.remark.trim())
     return toast.error("请填写备注");
-  if (ctx.type === "PRODUCTION_OUT" && !ctx.orderId)
-    return toast.error("生产领料必须选择关联订单");
 
   try {
     const isOut = actionDirection.value === "out";
@@ -929,9 +801,6 @@ const handleSubmit = async () => {
       locationId: ctx.locationId || undefined,
     };
 
-    if (ctx.type === "PRODUCTION_OUT") {
-      body.orderId = ctx.orderId;
-    }
     if (ctx.type === "PURCHASE_IN") {
       body.unitCost = ctx.unitCost;
     }
@@ -952,11 +821,9 @@ const actionSheetInv = ref<any>(null);
 
 const allActions = [
   { type: "PURCHASE_IN", label: "采购入库" },
-  { type: "PRODUCTION_IN", label: "生产入库" },
   { type: "RETURN_IN", label: "退货入库" },
   { type: "CHECK_IN", label: "盘盈入库" },
   { type: "SALES_OUT", label: "销售出库" },
-  { type: "PRODUCTION_OUT", label: "生产领料" },
   { type: "SAMPLE_OUT", label: "打样领料" },
   { type: "SCRAP_OUT", label: "报废出库" },
   { type: "CHECK_OUT", label: "盘亏出库" },
@@ -974,12 +841,7 @@ const selectSheetAction = (type: string) => {
     openTransfer(actionSheetInv.value);
     return;
   }
-  const direction = [
-    "PURCHASE_IN",
-    "PRODUCTION_IN",
-    "RETURN_IN",
-    "CHECK_IN",
-  ].includes(type)
+  const direction = ["PURCHASE_IN", "RETURN_IN", "CHECK_IN"].includes(type)
     ? "in"
     : "out";
   openActionModal("row", direction, { product: actionSheetInv.value, type });
@@ -1098,27 +960,6 @@ const handleTransfer = async () => {
   } catch (e: any) {
     toast.error(e, "调拨失败");
   }
-};
-
-// ==================== 订单选择 ====================
-const showOrderPicker = ref(false);
-const orderSearch = ref("");
-
-const filteredOrders = computed(() => {
-  if (!orderSearch.value.trim()) return orders.value;
-  const q = orderSearch.value.toLowerCase();
-  return orders.value.filter((o: any) => o.orderCode.toLowerCase().includes(q));
-});
-
-const openOrderPicker = () => {
-  orderSearch.value = "";
-  showOrderPicker.value = true;
-};
-
-const selectOrder = (order: any) => {
-  actionContext.value.relatedCode = order.orderCode;
-  actionContext.value.orderId = order.id;
-  showOrderPicker.value = false;
 };
 
 // ==================== 产品选择 ====================

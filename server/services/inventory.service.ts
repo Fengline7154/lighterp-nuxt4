@@ -137,7 +137,7 @@ export const createInventoryService = (prisma: PrismaClient) => {
         page,
         limit,
         orderBy,
-        include: { product: { select: { code: true } } },
+        include: { product: { select: { code: true, category: true } } },
       });
 
       // 收集当前页产品 ID
@@ -155,6 +155,7 @@ export const createInventoryService = (prisma: PrismaClient) => {
         return {
           ...i,
           productCode: i.product?.code || i.productId,
+          category: i.product?.category || "",
           availableQty: available.toString(),
           shortageQty: shortage.toString(),
         };
@@ -216,6 +217,7 @@ export const createInventoryService = (prisma: PrismaClient) => {
       }
 
       // 3. 减去未消耗预留
+      // 3. 减去未消耗预留，并检查预留被抽调的情况
       for (const productId of productIds) {
         const reserved = await prisma.orderReservation.aggregate({
           where: {
@@ -239,8 +241,33 @@ export const createInventoryService = (prisma: PrismaClient) => {
           .minus(consumed)
           .minus(released);
 
-        const shortage = shortageMap.get(productId) || createDecimal(0);
-        shortageMap.set(productId, shortage.minus(unreservedConsumed));
+        // 查当前库存
+        const inv = await prisma.inventory.findUnique({
+          where: { productId },
+          select: { quantity: true, reservedQty: true },
+        });
+
+        const totalStock = inv
+          ? createDecimal(String(inv.quantity))
+          : createDecimal(0);
+        const inventoryReserved = inv
+          ? createDecimal(String(inv.reservedQty))
+          : createDecimal(0);
+
+        // 计算缺口
+        let shortage = shortageMap.get(productId) || createDecimal(0);
+        shortage = shortage.minus(unreservedConsumed);
+
+        // 检查预留被抽调：未消耗预留 > 总库存
+        if (unreservedConsumed.gt(totalStock)) {
+          const reserveGap = unreservedConsumed.minus(totalStock);
+          shortage = shortage.plus(reserveGap);
+        }
+
+        // 缺口最小为 0
+        if (shortage.lt(0)) shortage = createDecimal(0);
+
+        shortageMap.set(productId, shortage);
       }
 
       return shortageMap;

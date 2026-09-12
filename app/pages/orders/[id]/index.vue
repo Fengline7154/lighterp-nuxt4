@@ -30,6 +30,12 @@
         >
           打印报工单
         </button>
+        <button
+          @click="openSubstitutionViewer"
+          class="min-h-[44px] px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition text-sm"
+        >
+          替代记录
+        </button>
       </div>
     </div>
     <!-- 物料需求查看弹窗 -->
@@ -119,6 +125,67 @@
         <button
           @click="showMaterialRequirements = false"
           class="mt-4 w-full min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 text-sm"
+        >
+          关闭
+        </button>
+      </div>
+    </div>
+    <!-- 替代料记录弹窗 -->
+    <div
+      v-if="showSubstitutionModal"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showSubstitutionModal = false"
+      />
+      <div
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-2xl max-h-[80vh] overflow-auto"
+      >
+        <h2 class="text-lg font-bold mb-4">替代料记录</h2>
+
+        <div
+          v-if="substitutions.length === 0"
+          class="text-center text-slate-400 py-8"
+        >
+          该订单暂无替代料记录
+        </div>
+
+        <div v-else class="space-y-3">
+          <div
+            v-for="record in substitutions"
+            :key="record.id"
+            class="bg-slate-50 border rounded-lg p-4 space-y-2"
+          >
+            <div class="flex items-center gap-2 text-sm">
+              <span class="text-slate-500">原物料：</span>
+              <span class="font-medium">{{ record.originalProductName }}</span>
+              <span class="text-slate-400">→</span>
+              <span class="text-slate-500">替代料：</span>
+              <span class="font-medium text-purple-600">{{
+                record.substituteProductName
+              }}</span>
+            </div>
+            <div class="flex gap-4 text-sm">
+              <span
+                >数量：<span class="font-medium">{{
+                  record.quantity
+                }}</span></span
+              >
+              <span class="text-slate-400">|</span>
+              <span class="text-slate-500"
+                >时间：{{ formatDate(record.createdAt) }}</span
+              >
+            </div>
+            <div v-if="record.remark" class="text-xs text-slate-500">
+              备注：{{ record.remark }}
+            </div>
+          </div>
+        </div>
+
+        <button
+          @click="showSubstitutionModal = false"
+          class="mt-4 w-full min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
         >
           关闭
         </button>
@@ -241,7 +308,7 @@
                 </span>
                 <button
                   v-if="canEditPlans"
-                  @click="removePlan(product, plan)"
+                  @click="removePlan(plan)"
                   class="text-red-400 hover:text-red-600 text-sm"
                 >
                   删除
@@ -272,13 +339,6 @@
           >
             暂无工序，无法报工
           </span>
-          <button
-            @click="handleSavePlans"
-            v-if="canEditPlans"
-            class="flex-1 min-h-[44px] bg-green-500 text-white py-2 rounded-lg hover:bg-green-600 transition text-sm"
-          >
-            保存工序
-          </button>
           <button
             @click="showProcessViewer = false"
             class="flex-1 min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
@@ -1452,6 +1512,15 @@
         </div>
       </div>
     </div>
+    <CommonConfirmDialog
+      :visible="showConfirmModal"
+      :message="confirmMessage"
+      :loading="confirmLoading"
+      confirm-text="继续"
+      cancel-text="取消"
+      @confirm="handleConfirm"
+      @cancel="showConfirmModal = false"
+    />
   </div>
 </template>
 
@@ -1464,6 +1533,29 @@ const { apiFetch } = useApi();
 const toast = useToast();
 const route = useRoute();
 const showMoreMenu = ref(false);
+//自定义警告弹窗
+const showConfirmModal = ref(false);
+const confirmMessage = ref("");
+const confirmLoading = ref(false);
+const pendingConfirmAction = ref<(() => Promise<void>) | null>(null);
+
+const showConfirm = (message: string, onConfirm: () => Promise<void>) => {
+  confirmMessage.value = message;
+  pendingConfirmAction.value = onConfirm;
+  showConfirmModal.value = true;
+};
+
+const handleConfirm = async () => {
+  if (!pendingConfirmAction.value) return;
+  confirmLoading.value = true;
+  try {
+    await pendingConfirmAction.value();
+    showConfirmModal.value = false;
+  } finally {
+    confirmLoading.value = false;
+    pendingConfirmAction.value = null;
+  }
+};
 // ==================== 订单数据 ====================
 const {
   data: order,
@@ -1520,10 +1612,51 @@ const receiptUnit = computed(() => {
  * 后端返回 { receipt, warnings }
  * warnings 为倒冲物料缺口警告，非空时弹窗展示
  */
+
+const doReceipt = async () => {
+  // 入库提交逻辑
+  const result = await apiFetch<any>(
+    `/api/orders/${route.params.id}/receipts`,
+    {
+      method: "POST",
+      body: {
+        orderItemId: receiptForm.orderItemId,
+        quantity: receiptForm.quantity,
+        remark: receiptForm.remark,
+        locationId: receiptForm.locationId || undefined,
+      },
+    },
+  );
+
+  // 处理字符串警告
+  const stringWarnings = (result?.warnings || []).filter(
+    (w: any) => typeof w === "string",
+  );
+  if (stringWarnings.length > 0) {
+    toast.error(stringWarnings.join("；"));
+  }
+
+  // 处理结构化缺口警告
+  const shortageList = (result?.warnings || []).filter(
+    (w: any) => typeof w === "object" && w.productId,
+  );
+
+  if (shortageList.length > 0) {
+    shortageWarnings.value = shortageList;
+    showShortageModal.value = true;
+    showReceiptModal.value = false;
+  } else {
+    if (stringWarnings.length === 0) {
+      toast.success("入库成功");
+    }
+    showReceiptModal.value = false;
+  }
+
+  await loadOrder();
+};
 const handleReceipt = async () => {
   if (!receiptForm.orderItemId) return toast.error("请选择产品");
 
-  // 提交前查完工数，弹确认
   const item = order.value?.items?.find(
     (i: any) => i.id === receiptForm.orderItemId,
   );
@@ -1531,57 +1664,14 @@ const handleReceipt = async () => {
   const receiptQty = Number(receiptForm.quantity);
 
   if (receiptQty > producedQty) {
-    if (
-      !confirm(
-        `完工数 ${producedQty} 小于本次入库数 ${receiptQty}，是否继续入库？`,
-      )
-    ) {
-      return;
-    }
+    showConfirm(
+      `完工数 ${producedQty} 小于本次入库数 ${receiptQty}，是否继续入库？`,
+      doReceipt,
+    );
+    return;
   }
 
-  try {
-    const result = await apiFetch<any>(
-      `/api/orders/${route.params.id}/receipts`,
-      {
-        method: "POST",
-        body: {
-          orderItemId: receiptForm.orderItemId,
-          quantity: receiptForm.quantity,
-          remark: receiptForm.remark,
-          locationId: receiptForm.locationId || undefined,
-        },
-      },
-    );
-
-    // 处理字符串警告
-    const stringWarnings = (result?.warnings || []).filter(
-      (w: any) => typeof w === "string",
-    );
-    if (stringWarnings.length > 0) {
-      toast.error(stringWarnings.join("；"));
-    }
-
-    // 处理结构化缺口警告
-    const shortageList = (result?.warnings || []).filter(
-      (w: any) => typeof w === "object" && w.productId,
-    );
-
-    if (shortageList.length > 0) {
-      shortageWarnings.value = shortageList;
-      showShortageModal.value = true;
-      showReceiptModal.value = false;
-    } else {
-      if (stringWarnings.length === 0) {
-        toast.success("入库成功");
-      }
-      showReceiptModal.value = false;
-    }
-
-    await loadOrder();
-  } catch (e: any) {
-    toast.error(e, "入库失败");
-  }
+  await doReceipt();
 };
 
 // ==================== 倒冲缺口警告弹窗 ====================
@@ -1594,7 +1684,21 @@ interface ShortageWarning {
 }
 
 const shortageWarnings = ref<ShortageWarning[]>([]);
+//替代料弹窗
+const showSubstitutionModal = ref(false);
+const substitutions = ref<any[]>([]);
 
+const openSubstitutionViewer = async () => {
+  try {
+    const res = await apiFetch<any>(
+      `/api/material-substitutions?orderId=${route.params.id}`,
+    );
+    substitutions.value = res.data || [];
+    showSubstitutionModal.value = true;
+  } catch (e: any) {
+    toast.error(e, "加载替代记录失败");
+  }
+};
 // ===================== 倒冲替代料 =====================
 const showSubstitutePicker = ref<number | null>(null);
 const substituteSearch = ref("");
@@ -1646,9 +1750,11 @@ const selectSubstitute = async (p: any) => {
     await apiFetch(`/api/inventory/substitute`, {
       method: "POST",
       body: {
-        productId: warning.productId, // 原缺口物料 ID
-        substituteProductId: p.id, // 替代料 ID
-        quantity: Number(warning.shortageQty), // 替代数量 = 缺口量
+        productId: warning.productId,
+        substituteProductId: p.id,
+        quantity: Number(warning.shortageQty),
+        orderId: order.value?.id,
+        orderItemId: receiptForm.orderItemId,
         remark: `替代 ${warning.productName} 缺口`,
       },
     });
@@ -1874,20 +1980,18 @@ const confirmAddPlan = async () => {
   if (!addPlanForm.processName.trim()) return toast.error("请输入或选择工序");
 
   try {
-    await apiFetch(`/api/orders/${route.params.id}/plans`, {
+    await apiFetch(`/api/orders/${route.params.id}/plan-add`, {
       method: "POST",
       body: {
         orderItemId: addPlanForm.orderItemId,
-        plans: [
-          {
-            sequence: addPlanForm.sequence,
-            processName: addPlanForm.processName,
-            wageType: addPlanForm.wageType,
-            standardHours: addPlanForm.standardHours || undefined,
-            hourlyRate: addPlanForm.hourlyRate || undefined,
-            unitPrice: addPlanForm.unitPrice || undefined,
-          },
-        ],
+        plan: {
+          sequence: addPlanForm.sequence,
+          processName: addPlanForm.processName,
+          wageType: addPlanForm.wageType,
+          standardHours: addPlanForm.standardHours || undefined,
+          hourlyRate: addPlanForm.hourlyRate || undefined,
+          unitPrice: addPlanForm.unitPrice || undefined,
+        },
       },
     });
     toast.success("工序已添加");
@@ -1899,28 +2003,13 @@ const confirmAddPlan = async () => {
 };
 
 // ==================== 删除工序 ====================
-const removePlan = async (product: any, plan: any) => {
+const removePlan = async (plan: any) => {
   if (!confirm(`确认删除工序「${plan.processName}」？`)) return;
 
   try {
-    const remainingPlans = product.plans
-      .filter((p: any) => p.id !== plan.id)
-      .map((p: any, i: number) => ({
-        id: p.id,
-        sequence: i + 1,
-        processName: p.processName,
-        wageType: p.wageType,
-        hourlyRate: p.hourlyRate ? Number(p.hourlyRate) : undefined,
-        unitPrice: p.unitPrice ? Number(p.unitPrice) : undefined,
-        standardHours: p.standardHours ? Number(p.standardHours) : undefined,
-      }));
-
-    await apiFetch(`/api/orders/${route.params.id}/plans`, {
+    await apiFetch(`/api/orders/${route.params.id}/plan-delete`, {
       method: "POST",
-      body: {
-        orderItemId: product.orderItemId,
-        plans: remainingPlans,
-      },
+      body: { planId: plan.id },
     });
     toast.success("工序已删除");
     await openProcessViewer();
@@ -1929,34 +2018,6 @@ const removePlan = async (product: any, plan: any) => {
   }
 };
 
-// ==================== 保存工序（整体提交） ====================
-const handleSavePlans = async () => {
-  try {
-    for (const product of productGroups.value) {
-      const plans = product.plans.map((p: any, i: number) => ({
-        id: p.id,
-        sequence: i + 1,
-        processName: p.processName,
-        wageType: p.wageType,
-        hourlyRate: p.hourlyRate ? Number(p.hourlyRate) : undefined,
-        unitPrice: p.unitPrice ? Number(p.unitPrice) : undefined,
-        standardHours: p.standardHours ? Number(p.standardHours) : undefined,
-      }));
-
-      await apiFetch(`/api/orders/${route.params.id}/plans`, {
-        method: "POST",
-        body: {
-          orderItemId: product.orderItemId,
-          plans,
-        },
-      });
-    }
-    toast.success("工序已保存");
-    await openProcessViewer();
-  } catch (e: any) {
-    toast.error(e, "保存工序失败");
-  }
-};
 // ==================== 发货 ====================
 const showShipModal = ref(false);
 const shipQtys = reactive<Record<string, number>>({});

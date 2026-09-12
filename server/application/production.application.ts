@@ -76,15 +76,15 @@ export const createProductionApplication = (prisma: PrismaClient) => {
           txCtx,
         );
 
-        // 为每条报工记录单独写审计，entityId 使用具体 log.id
-        for (const logId of result.logIds) {
+        // 为每条报工记录单独写审计，remark 带序号
+        for (let i = 0; i < result.logIds.length; i++) {
           await auditService.log(
             ctx.operatorId,
             "ProductionLog",
-            logId,
+            result.logIds[i],
             "CREATE",
             {
-              remark: `批量报工：共 ${result.count} 条（记录ID: ${logId}）`,
+              remark: `批量报工：第 ${i + 1} 条 / 共 ${result.count} 条（记录ID: ${result.logIds[i]}）`,
             },
           );
         }

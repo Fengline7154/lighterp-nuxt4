@@ -120,7 +120,7 @@ export const createProductionLogService = (prisma: PrismaClient) => {
           {
             planId: params.planId,
             orderId: params.orderId,
-            productId: params.productId,
+            productId: params.productId || "-",
             processId: params.processId,
             processName: params.processName,
             completedQty: toPrismaDecimal(completedQty),
@@ -341,13 +341,28 @@ export const createProductionLogService = (prisma: PrismaClient) => {
           const completedQty = createDecimal(report.completedQty);
           const qualifiedQty = createDecimal(report.qualifiedQty);
           const defectiveQty = createDecimal(report.defectiveQty);
-
           // 校验超限
           const plan = await planRepo.findFirst(
             { id: report.planId },
             undefined,
             txCtx,
           );
+          if (!report.productId) {
+            const plan = await planRepo.findFirst(
+              { id: report.planId },
+              undefined,
+              txCtx,
+            );
+            if (plan?.productId) {
+              report.productId = plan.productId;
+            } else if (plan?.orderItemId) {
+              const orderItem = await txCtx.prisma.orderItem.findUnique({
+                where: { id: plan.orderItemId },
+                select: { productId: true },
+              });
+              report.productId = orderItem?.productId || "";
+            }
+          }
           if (plan) {
             const planAssigned = createDecimal(String(plan.assignedQty));
             const planCompleted = createDecimal(String(plan.completedQty));
@@ -380,7 +395,7 @@ export const createProductionLogService = (prisma: PrismaClient) => {
             {
               planId: report.planId,
               orderId: report.orderId,
-              productId: report.productId,
+              productId: report.productId || "-",
               processId: report.processId,
               processName: report.processName,
               workerId: report.workerId,

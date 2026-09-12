@@ -16,7 +16,7 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         pendingOrders,
         producingOrders,
         todayReceipts,
-        lowStock,
+        alerts,
         overStock,
         activeBoms,
       ] = await Promise.all([
@@ -28,10 +28,24 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
           },
           _sum: { quantity: true },
         }),
-        prisma.inventory.count({ where: { quantity: { lte: 10 } } }),
+        prisma.inventoryAlert.findMany({
+          include: {
+            product: {
+              include: {
+                inventories: { select: { quantity: true } },
+              },
+            },
+          },
+        }),
         prisma.inventory.count({ where: { quantity: { gte: 1000 } } }),
         prisma.bom.count({ where: { status: "PUBLISHED" } }),
       ]);
+
+      // 计算低于预警线的数量
+      const lowStock = alerts.filter((alert) => {
+        const qty = Number(alert.product.inventories[0]?.quantity || 0);
+        return qty < Number(alert.threshold);
+      }).length;
 
       return {
         pendingOrders,
@@ -108,6 +122,7 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
       };
     },
 
+    // ==================== getShortage（展到底 + 预留被抽调处理 + 优先使用订单 BOM 快照） ====================
     async getShortage() {
       const producingOrders = await prisma.order.findMany({
         where: { status: { in: ["APPROVED", "PRODUCING"] } },
@@ -129,82 +144,80 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         return { shortages: [], totalOrders: 0 };
       }
 
-      // 边展边判断：当前层级库存够就停止，不够继续向下展开
-      const expandBomWithStockCheck = async (
-        productId: string,
+      // 展到底：把有 BOM 的物料递归展开成最底层物料
+      const expandBomToBottom = async (
+        bomId: string,
         productName: string,
-        demandQty: IDecimal,
+        parentQuantity: IDecimal,
         depth: number = 0,
       ): Promise<Map<string, { productName: string; quantity: IDecimal }>> => {
         const result = new Map<
           string,
           { productName: string; quantity: IDecimal }
         >();
-        if (depth >= 10 || demandQty.lte(0)) return result;
+        if (depth >= 10 || parentQuantity.lte(0)) return result;
 
-        // 查该产品库存和预留
-        const inv = await prisma.inventory.findUnique({
-          where: { productId },
-          select: { quantity: true, reservedQty: true },
+        // 直接查 bomId 的 BOM
+        const bom = await prisma.bom.findUnique({
+          where: { id: bomId },
+          include: {
+            items: {
+              include: {
+                material: { select: { name: true } },
+              },
+            },
+          },
         });
 
-        const totalQty = inv
-          ? createDecimal(String(inv.quantity))
-          : createDecimal(0);
-        const reservedQty = inv
-          ? createDecimal(String(inv.reservedQty))
-          : createDecimal(0);
-        const availableQty = totalQty.minus(reservedQty);
-
-        if (availableQty.gte(demandQty)) {
-          // 库存够，不再向下展开
-          result.set(productId, { productName, quantity: demandQty });
+        if (!bom || bom.items.length === 0) {
+          // 无 BOM：视为最底层物料
+          result.set(bomId, { productName, quantity: parentQuantity });
           return result;
         }
 
-        // 库存不够，记录缺口，剩余需求向下展开
-        if (availableQty.gt(0)) {
-          result.set(productId, {
-            productName,
-            quantity: demandQty.minus(availableQty),
-          });
-        } else {
-          result.set(productId, { productName, quantity: demandQty });
-        }
-
-        // 向下展开剩余需求
-        const remainingQty = availableQty.gt(0)
-          ? demandQty.minus(availableQty)
-          : demandQty;
-        const bom = await bomRepo.findActiveByProductId(productId);
-        if (!bom || bom.items.length === 0) return result;
-
         for (const bomItem of bom.items) {
           const childQty = createDecimal(String(bomItem.quantity)).times(
-            remainingQty,
+            parentQuantity,
           );
-          const childResult = await expandBomWithStockCheck(
+
+          // 子物料可能还有子 BOM，递归展开
+          const subBom = await bomRepo.findActiveByProductId(
             bomItem.materialId,
-            bomItem.materialName,
-            childQty,
-            depth + 1,
           );
-          for (const [matId, matData] of childResult) {
-            const existing = result.get(matId);
+          if (subBom) {
+            const childResult = await expandBomToBottom(
+              subBom.id,
+              bomItem.material?.name || bomItem.materialName,
+              childQty,
+              depth + 1,
+            );
+            for (const [matId, matData] of childResult) {
+              const existing = result.get(matId);
+              if (existing) {
+                existing.quantity = existing.quantity.plus(matData.quantity);
+              } else {
+                result.set(matId, {
+                  productName: matData.productName,
+                  quantity: matData.quantity,
+                });
+              }
+            }
+          } else {
+            const existing = result.get(bomItem.materialId);
             if (existing) {
-              existing.quantity = existing.quantity.plus(matData.quantity);
+              existing.quantity = existing.quantity.plus(childQty);
             } else {
-              result.set(matId, {
-                productName: matData.productName,
-                quantity: matData.quantity,
+              result.set(bomItem.materialId, {
+                productName: bomItem.material?.name || bomItem.materialName,
+                quantity: childQty,
               });
             }
           }
         }
-
         return result;
       };
 
+      // 汇总所有订单的底层物料需求
       const materialMap = new Map<
         string,
         {
@@ -222,9 +235,19 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
           const remaining = totalQty.minus(fulfilled);
           if (remaining.lte(0)) continue;
 
-          // 从订单明细产品开始边展边判断
-          const expandedMaterials = await expandBomWithStockCheck(
-            item.productId,
+          // 优先用订单明细锁定的 bomId，没有则查标准 BOM
+          let bomId = item.bomId;
+          if (!bomId) {
+            const publishedBom = await bomRepo.findActiveByProductId(
+              item.productId,
+            );
+            if (publishedBom) bomId = publishedBom.id;
+          }
+
+          if (!bomId) continue;
+
+          const expandedMaterials = await expandBomToBottom(
+            bomId,
             item.productName,
             remaining,
             0,
@@ -255,13 +278,14 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         }
       }
 
-      // 缺口计算：需求量 - 可用库存
+      // 查所有涉及物料的库存
       const allMaterialIds = [...materialMap.keys()];
       const inventories = await prisma.inventory.findMany({
         where: { productId: { in: allMaterialIds } },
       });
       const invMap = new Map(inventories.map((i) => [i.productId, i]));
 
+      // 计算缺口（考虑预留被抽调）
       const shortages: Array<{
         productId: string;
         productCode: string;
@@ -279,12 +303,22 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
           createDecimal(0),
         );
         const inv = invMap.get(productId);
-        const invQty = inv
-          ? createDecimal(String(inv.quantity)).minus(
-              createDecimal(String(inv.reservedQty)),
-            )
+        const totalStock = inv
+          ? createDecimal(String(inv.quantity))
           : createDecimal(0);
-        const realShortage = totalDemand.minus(invQty);
+        const reservedQty = inv
+          ? createDecimal(String(inv.reservedQty))
+          : createDecimal(0);
+        const availableQty = totalStock.minus(reservedQty);
+
+        let realShortage: IDecimal;
+        if (availableQty.lt(0)) {
+          // 预留被抽调：缺口 = 需求 + 被抽调的量
+          realShortage = totalDemand.plus(availableQty.negated());
+        } else {
+          realShortage = totalDemand.minus(availableQty);
+        }
+        if (realShortage.lt(0)) realShortage = createDecimal(0);
 
         if (realShortage.gt(0)) {
           shortages.push({
@@ -293,7 +327,7 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
             productName: data.productName,
             unit: data.unit || "",
             demand: totalDemand.toString(),
-            available: invQty.toString(),
+            available: availableQty.gt(0) ? availableQty.toString() : "0",
             realShortage: realShortage.toString(),
             orderCount: data.orders.length,
           });
@@ -311,6 +345,7 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
       };
     },
 
+    // ==================== getShortageDetail（展到底，优先使用订单 BOM 快照） ====================
     async getShortageDetail(productId: string) {
       const producingOrders = await prisma.order.findMany({
         where: { status: { in: ["APPROVED", "PRODUCING"] } },
@@ -335,76 +370,52 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
         source: string;
       }> = [];
 
-      // 边展边判断：计算某个订单明细对目标物料的缺口需求
-      const findShortageInBom = async (
+      // 展到底：递归查找目标物料在某个 BOM 中的需求量
+      const findDemandInBom = async (
         targetProductId: string,
-        currentProductId: string,
-        demandQty: IDecimal,
+        bomId: string,
+        parentQuantity: IDecimal,
         depth: number = 0,
       ): Promise<IDecimal> => {
-        if (depth >= 10 || demandQty.lte(0)) return createDecimal(0);
+        if (depth >= 10 || parentQuantity.lte(0)) return createDecimal(0);
 
-        // 如果当前层级就是目标物料
-        if (currentProductId === targetProductId) {
-          // 查该物料的可用库存
-          const inv = await prisma.inventory.findUnique({
-            where: { productId: targetProductId },
-            select: { quantity: true, reservedQty: true },
-          });
-          const totalQty = inv
-            ? createDecimal(String(inv.quantity))
-            : createDecimal(0);
-          const reservedQty = inv
-            ? createDecimal(String(inv.reservedQty))
-            : createDecimal(0);
-          const availableQty = totalQty.minus(reservedQty);
-
-          // 缺口 = 需求 - 可用
-          const shortage = demandQty.minus(availableQty);
-          return shortage.gt(0) ? shortage : createDecimal(0);
-        }
-
-        // 当前层级不是目标物料，查它的库存是否够
-        const inv = await prisma.inventory.findUnique({
-          where: { productId: currentProductId },
-          select: { quantity: true, reservedQty: true },
+        const bom = await prisma.bom.findUnique({
+          where: { id: bomId },
+          include: { items: true },
         });
-        const totalQty = inv
-          ? createDecimal(String(inv.quantity))
-          : createDecimal(0);
-        const reservedQty = inv
-          ? createDecimal(String(inv.reservedQty))
-          : createDecimal(0);
-        const availableQty = totalQty.minus(reservedQty);
 
-        // 当前层级库存够，不需要向下展开，目标物料在这里无缺口
-        if (availableQty.gte(demandQty)) {
-          return createDecimal(0);
+        if (!bom || bom.items.length === 0) {
+          // 无 BOM：如果当前 BOM 对应的产品就是目标物料
+          return bomId === targetProductId ? parentQuantity : createDecimal(0);
         }
 
-        // 当前层级库存不够，剩余需求向下展开
-        const remainingQty = availableQty.gt(0)
-          ? demandQty.minus(availableQty)
-          : demandQty;
-
-        const bom = await bomRepo.findActiveByProductId(currentProductId);
-        if (!bom || bom.items.length === 0) return createDecimal(0);
-
-        let totalShortage = createDecimal(0);
+        let totalDemand = createDecimal(0);
         for (const bomItem of bom.items) {
-          const childDemand = createDecimal(String(bomItem.quantity)).times(
-            remainingQty,
+          const childQty = createDecimal(String(bomItem.quantity)).times(
+            parentQuantity,
           );
-          totalShortage = totalShortage.plus(
-            await findShortageInBom(
-              targetProductId,
-              bomItem.materialId,
-              childDemand,
-              depth + 1,
-            ),
+
+          if (bomItem.materialId === targetProductId) {
+            totalDemand = totalDemand.plus(childQty);
+            continue;
+          }
+
+          // 查子物料是否有子 BOM
+          const subBom = await bomRepo.findActiveByProductId(
+            bomItem.materialId,
           );
+          if (subBom) {
+            totalDemand = totalDemand.plus(
+              await findDemandInBom(
+                targetProductId,
+                subBom.id,
+                childQty,
+                depth + 1,
+              ),
+            );
+          }
         }
-        return totalShortage;
+        return totalDemand;
       };
 
       for (const order of producingOrders) {
@@ -414,45 +425,41 @@ export const createAnalyticsService = (prisma: PrismaClient) => {
           const remaining = totalQty.minus(fulfilled);
           if (remaining.lte(0)) continue;
 
-          // 如果订单明细产品本身就是目标物料
+          // 订单明细产品本身就是目标物料
           if (item.productId === productId) {
-            const inv = await prisma.inventory.findUnique({
-              where: { productId },
-              select: { quantity: true, reservedQty: true },
+            details.push({
+              orderCode: order.orderCode,
+              productName: item.productName,
+              demand: remaining.toString(),
+              source: "直接订单",
             });
-            const totalInv = inv
-              ? createDecimal(String(inv.quantity))
-              : createDecimal(0);
-            const reservedInv = inv
-              ? createDecimal(String(inv.reservedQty))
-              : createDecimal(0);
-            const availableInv = totalInv.minus(reservedInv);
-            const shortage = remaining.minus(availableInv);
-
-            if (shortage.gt(0)) {
-              details.push({
-                orderCode: order.orderCode,
-                productName: item.productName,
-                demand: shortage.toString(),
-                source: "直接订单",
-              });
-            }
             continue;
           }
 
-          // 从订单明细产品开始边展边判断
-          const shortageQty = await findShortageInBom(
+          // 优先用订单明细锁定的 bomId，没有则查标准 BOM
+          let bomId = item.bomId;
+          if (!bomId) {
+            const publishedBom = await bomRepo.findActiveByProductId(
+              item.productId,
+            );
+            if (publishedBom) bomId = publishedBom.id;
+          }
+
+          if (!bomId) continue;
+
+          // 在 BOM 中查找目标物料的需求量
+          const demandQty = await findDemandInBom(
             productId,
-            item.productId,
+            bomId,
             remaining,
             0,
           );
 
-          if (shortageQty.gt(0)) {
+          if (demandQty.gt(0)) {
             details.push({
               orderCode: order.orderCode,
               productName: item.productName,
-              demand: shortageQty.toString(),
+              demand: demandQty.toString(),
               source: "BOM 展开",
             });
           }

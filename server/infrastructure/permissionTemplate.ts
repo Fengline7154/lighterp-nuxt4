@@ -264,14 +264,13 @@ export const RoleDefaultPermissions = {
     // 没有报表权限
   ],
 
-  // 仓库管理员
   warehouseKeeper: [
     // 订单模块（只能查看）
     PermissionTemplates.order.view,
     PermissionTemplates.order.ship,
     //采购模块
     PermissionTemplates.purchase.view,
-    PermissionTemplates.purchase.receipt, // 仓库负责采购入库
+    PermissionTemplates.purchase.receipt,
     PermissionTemplates.purchase.supplierView,
     // 库存模块（全权限）
     PermissionTemplates.inventory.view,
@@ -281,11 +280,13 @@ export const RoleDefaultPermissions = {
     PermissionTemplates.inventory.import,
     PermissionTemplates.inventory.export,
     //报工模块
-    PermissionTemplates.production.view, // 仓库可以看到生产进度
+    PermissionTemplates.production.view,
     // 产品模块
     PermissionTemplates.product.view,
     // BOM模块（只能查看）
     PermissionTemplates.bom.view,
+    // 报表模块（仓库需要看缺料和库存图表）
+    PermissionTemplates.report.view,
   ],
 
   // 财务人员（如果有这个角色）

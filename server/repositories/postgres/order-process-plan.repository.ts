@@ -84,5 +84,13 @@ export const createOrderProcessPlanRepository = (prisma: PrismaClient) => {
         select: { id: true, qualifiedQty: true },
       });
     },
+    /** 按订单明细 ID 查询工序计划（仅校验用字段） */
+    async findForValidation(orderItemId: string, tx?: TxContext) {
+      const client = getClient(tx);
+      return client.orderProcessPlan.findMany({
+        where: { orderItemId },
+        select: { id: true, sequence: true, processName: true },
+      });
+    },
   };
 };

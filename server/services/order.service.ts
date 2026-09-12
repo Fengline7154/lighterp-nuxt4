@@ -87,7 +87,7 @@ export const createOrderService = (prisma: PrismaClient) => {
       const orderBy: any = {};
       orderBy[options.sortField || "createdAt"] = options.sortDir || "desc";
 
-      return orderRepo.findMany(where, {
+      const result = await orderRepo.findMany(where, {
         page: options.page,
         limit: options.limit,
         orderBy,
@@ -97,6 +97,8 @@ export const createOrderService = (prisma: PrismaClient) => {
           creator: { select: { badgeCode: true, name: true } },
         },
       });
+
+      return result;
     },
     async findByOrderCode(orderCode: string, tx?: TxContext) {
       const client = tx?.prisma ?? prisma;

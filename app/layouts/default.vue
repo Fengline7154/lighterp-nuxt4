@@ -139,7 +139,14 @@ const menuGroups = [
       {
         label: "订单管理",
         to: "/orders",
-        roles: ["admin", "manager", "seniorStaff", "staff", "accountant"],
+        roles: [
+          "admin",
+          "manager",
+          "seniorStaff",
+          "staff",
+          "accountant",
+          "warehouseKeeper",
+        ],
       },
       {
         label: "采购管理",
@@ -207,6 +214,11 @@ const menuGroups = [
         to: "/processes",
         roles: ["admin", "manager", "seniorStaff"],
       },
+      {
+        label: "库存预警",
+        to: "/inventory-alerts",
+        roles: ["admin", "manager", "warehouseKeeper"],
+      },
     ],
   },
   {
@@ -216,13 +228,7 @@ const menuGroups = [
       {
         label: "供应商管理",
         to: "/suppliers",
-        roles: [
-          "admin",
-          "manager",
-          "warehouseKeeper",
-          "seniorStaff",
-          "accountant",
-        ],
+        roles: ["admin", "manager", "seniorStaff", "accountant"],
       },
       {
         label: "员工管理",

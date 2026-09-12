@@ -76,7 +76,7 @@ function computeDataScope(role: string | null, department: string | null) {
 
     case "warehouseKeeper":
       // 仓管只看自己，但后续可按仓库维度扩展
-      return { type: "self" as const };
+      return { type: "all" as const };
 
     case "accountant":
       // 财务可能看全部数据用于核算，但无操作权限

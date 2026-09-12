@@ -213,6 +213,60 @@
         >
       </div>
     </div>
+    <!-- 批量创建重名提醒弹窗 -->
+    <div
+      v-if="showBatchDuplicateModal"
+      class="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showBatchDuplicateModal = false"
+      />
+      <div
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-lg max-h-[80vh] overflow-auto"
+      >
+        <h2 class="text-lg font-bold mb-2 text-amber-600">⚠️ 发现同名产品</h2>
+        <p class="text-sm text-slate-500 mb-4">
+          以下产品名称已存在，是否继续创建？
+        </p>
+        <div class="space-y-3 mb-4">
+          <div
+            v-for="dup in batchDuplicates"
+            :key="dup.name"
+            class="bg-amber-50 border border-amber-200 rounded-lg p-3"
+          >
+            <div class="text-sm font-medium">{{ dup.name }}</div>
+            <div class="text-xs text-slate-500 mt-1">
+              已有产品：
+              <span
+                v-for="(p, i) in dup.products"
+                :key="p.id"
+                class="font-mono"
+              >
+                {{ p.code }}（{{ p.spec || "无规格" }}）<span
+                  v-if="i < dup.products.length - 1"
+                  >、</span
+                >
+              </span>
+            </div>
+          </div>
+        </div>
+        <div class="flex gap-2">
+          <button
+            @click="confirmBatchCreate"
+            class="flex-1 min-h-[44px] bg-amber-500 text-white py-2 rounded-lg hover:bg-amber-600 transition text-sm"
+          >
+            继续创建
+          </button>
+          <button
+            @click="showBatchDuplicateModal = false"
+            class="flex-1 min-h-[44px] border py-2 rounded-lg hover:bg-slate-50 transition text-sm"
+          >
+            取消
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -250,6 +304,12 @@ function addRow() {
 
 addRow();
 
+const showBatchDuplicateModal = ref(false);
+const batchDuplicates = ref<Array<{ name: string; products: any[] }>>([]);
+
+// 暂存待提交的数据
+const pendingPayload = ref<any>(null);
+
 async function handleSubmit() {
   const validItems = items.filter((i) => i.name.trim());
   if (validItems.length === 0) return toast.error("请至少输入一个产品名称");
@@ -268,6 +328,48 @@ async function handleSubmit() {
     attributes: i.remark ? { remark: i.remark } : undefined,
   }));
 
+  // 查同名产品
+  const allNames = validItems.map((i) => i.name.trim());
+  const duplicateList: Array<{ name: string; products: any[] }> = [];
+
+  for (const name of allNames) {
+    try {
+      const existing = await $fetch<any>("/api/products", {
+        query: { keyword: name, limit: 10 },
+      });
+      const sameNameProducts = (existing?.data || []).filter(
+        (p: any) => p.name === name,
+      );
+      if (sameNameProducts.length > 0) {
+        duplicateList.push({
+          name,
+          products: sameNameProducts,
+        });
+      }
+    } catch {
+      // 查询失败不阻断
+    }
+  }
+
+  if (duplicateList.length > 0) {
+    batchDuplicates.value = duplicateList;
+    pendingPayload.value = payload;
+    showBatchDuplicateModal.value = true;
+    return;
+  }
+
+  await doBatchCreate(payload);
+}
+
+async function confirmBatchCreate() {
+  showBatchDuplicateModal.value = false;
+  if (pendingPayload.value) {
+    await doBatchCreate(pendingPayload.value);
+    pendingPayload.value = null;
+  }
+}
+
+async function doBatchCreate(payload: any) {
   try {
     submitting.value = true;
     const res = await apiFetch<{ success: boolean; count: number }>(

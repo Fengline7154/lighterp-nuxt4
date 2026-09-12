@@ -377,6 +377,7 @@ const actionLabel = (a: string) =>
     RELEASE: "释放预留",
     ROUTING_SAVE: "保存工序模板",
     PUBLISH: "发布BOM",
+    BOM_REPLACE: "BOM物料替换",
   })[a] || a;
 
 const actionIcon = (a: string) =>

@@ -202,9 +202,11 @@ export const createOrderApplication = (prisma: PrismaClient) => {
     const result = await reservationService.findByOrderId(orderId, txCtx);
 
     for (const res of result.data) {
-      const remaining = createDecimal(String(res.quantity)).minus(
-        createDecimal(String(res.released)),
-      );
+      const qty = createDecimal(String(res.quantity));
+      const consumed = createDecimal(String(res.consumedQty));
+      const released = createDecimal(String(res.released));
+      const remaining = qty.minus(consumed).minus(released);
+
       if (remaining.lte(0)) continue;
 
       const stock = await inventoryService.getAvailableStock(
@@ -229,6 +231,7 @@ export const createOrderApplication = (prisma: PrismaClient) => {
           );
         }
       }
+
       await reservationService.incrementReleased(
         res.id,
         toPrismaDecimal(remaining),
@@ -246,7 +249,7 @@ export const createOrderApplication = (prisma: PrismaClient) => {
   ) {
     if (depth > 10 || demandQty.lte(0)) return;
 
-    // 1. 先消耗预留
+    // 1. 先消耗预留，同时扣真实库存
     const reservations = await reservationService.findUnconsumed(
       orderId,
       productId,
@@ -264,54 +267,76 @@ export const createOrderApplication = (prisma: PrismaClient) => {
       if (available.lte(0)) continue;
 
       const toConsume = remaining.lt(available) ? remaining : available;
+
+      // 1a. 更新 OrderReservation.consumedQty
       await reservationService.incrementConsumedQty(
         res.id,
         toPrismaDecimal(toConsume),
         txCtx,
       );
-      await inventoryService.release(
-        {
-          productId,
-          qty: Number(toConsume.toString()),
-          relatedCode: orderId,
+
+      // 1b. 释放库存预留 + 扣减真实库存（一次更新，避免乐观锁冲突）
+      await prisma.inventory.update({
+        where: { productId },
+        data: {
+          reservedQty: { decrement: toConsume.toString() },
+          quantity: { decrement: toConsume.toString() },
         },
-        txCtx,
-      );
+      });
+
+      // 1c. 同步扣减区域库存（优先扣库存最多的区域）
+      await deductFromLocations(productId, toConsume, txCtx);
+
       remaining = remaining.minus(toConsume);
     }
 
     if (remaining.lte(0)) return;
 
-    // 2. 预留不够，扣库存
-    const stock = await inventoryService.getAvailableStock(productId, txCtx);
-    if (stock && stock.availableQty.gt(0)) {
-      const toDeduct = stock.availableQty.lt(remaining)
-        ? stock.availableQty
-        : remaining;
-      await inventoryService.deduct(
-        {
+    // 2. 预留不够，扣剩余库存（直接更新总库存）
+    const inv = await prisma.inventory.findUnique({
+      where: { productId },
+      select: { quantity: true, productName: true },
+    });
+
+    if (inv) {
+      const totalQty = createDecimal(String(inv.quantity));
+      const toDeduct = totalQty.lt(remaining) ? totalQty : remaining;
+
+      if (toDeduct.gt(0)) {
+        await prisma.inventory.update({
+          where: { productId },
+          data: { quantity: { decrement: toDeduct.toString() } },
+        });
+
+        // 同步扣减区域库存
+        await deductFromLocations(productId, toDeduct, txCtx);
+
+        remaining = remaining.minus(toDeduct);
+      }
+
+      // 总库存不够，记录缺口
+      if (remaining.gt(0)) {
+        warnings.push({
           productId,
-          quantity: Number(toDeduct.toString()),
-          type: "PRODUCTION_OUT",
-        },
-        txCtx,
-      );
-      remaining = remaining.minus(toDeduct);
+          productName: inv.productName || productId,
+          shortageQty: remaining.toString(),
+        });
+        return;
+      }
+    } else {
+      warnings.push({
+        productId,
+        productName: productId,
+        shortageQty: remaining.toString(),
+      });
+      return;
     }
 
     if (remaining.lte(0)) return;
 
     // 3. 库存不够，向下展开
     const bom = await bomService.findActiveByProductId(productId, txCtx);
-    if (!bom) {
-      const productName = stock?.productName || productId;
-      warnings.push({
-        productId,
-        productName,
-        shortageQty: remaining.toString(),
-      });
-      return;
-    }
+    if (!bom) return;
 
     for (const bomItem of bom.items) {
       const childDemand = createDecimal(String(bomItem.quantity)).times(
@@ -325,6 +350,35 @@ export const createOrderApplication = (prisma: PrismaClient) => {
         warnings,
         depth + 1,
       );
+    }
+  }
+
+  /** 按库存从多到少扣减区域库存 */
+  async function deductFromLocations(
+    productId: string,
+    quantity: IDecimal,
+    txCtx: TxContext,
+  ) {
+    const inventoryLocations = await prisma.inventoryLocation.findMany({
+      where: { productId, quantity: { gt: 0 } },
+      orderBy: { quantity: "desc" },
+    });
+
+    let remainingToDeduct = quantity;
+    for (const loc of inventoryLocations) {
+      if (remainingToDeduct.lte(0)) break;
+
+      const locQty = createDecimal(String(loc.quantity));
+      const deductFromLoc = locQty.lt(remainingToDeduct)
+        ? locQty
+        : remainingToDeduct;
+
+      await prisma.inventoryLocation.update({
+        where: { id: loc.id },
+        data: { quantity: { decrement: deductFromLoc.toString() } },
+      });
+
+      remainingToDeduct = remainingToDeduct.minus(deductFromLoc);
     }
   }
   // ==================== 状态转移处理器 ====================
@@ -685,17 +739,45 @@ export const createOrderApplication = (prisma: PrismaClient) => {
 
     await costService.summarizeOrderCost(order.id, order.totalAmount, txCtx);
 
+    // 释放所有残留预留（同步更新 Inventory.reservedQty）
     const result = await reservationService.findByOrderId(order.id, txCtx);
     for (const rec of result.data) {
       const qty = createDecimal(String(rec.quantity));
+      const consumed = createDecimal(String(rec.consumedQty));
       const released = createDecimal(String(rec.released));
-      if (released.lt(qty)) {
-        await reservationService.incrementReleased(
-          rec.id,
-          toPrismaDecimal(qty.minus(released)),
+      const remaining = qty.minus(consumed).minus(released);
+
+      if (remaining.lte(0)) continue;
+
+      // 同步释放库存预留
+      if (rec.type === "PRODUCT_RESERVE" || rec.type === "MATERIAL_RESERVE") {
+        const stock = await inventoryService.getAvailableStock(
+          rec.productId,
           txCtx,
         );
+        if (stock) {
+          const currentReserved = createDecimal(String(stock.reservedQty));
+          const actual = remaining.lt(currentReserved)
+            ? remaining
+            : currentReserved;
+          if (actual.gt(0)) {
+            await inventoryService.release(
+              {
+                productId: rec.productId,
+                qty: Number(actual.toString()),
+                relatedCode: order.id,
+              },
+              txCtx,
+            );
+          }
+        }
       }
+
+      await reservationService.incrementReleased(
+        rec.id,
+        toPrismaDecimal(remaining),
+        txCtx,
+      );
     }
 
     await auditService.log(ctx.operatorId, "Order", order.id, "COMPLETE", {
@@ -1072,6 +1154,9 @@ export const createOrderApplication = (prisma: PrismaClient) => {
           });
         }
 
+        // 1.1 查订单（用于生成 bomCode 标识）
+        const order = await orderService.getOrderById(orderItem.orderId);
+
         // 2. 查当前 BOM
         const currentBom = await bomService.getById(orderItem.bomId);
         if (!currentBom) {
@@ -1135,32 +1220,43 @@ export const createOrderApplication = (prisma: PrismaClient) => {
           }
         }
 
-        // 5. 克隆 BOM
-        const seqService = createSequenceService(prisma);
-        const newBomCode = await seqService.getFormattedBomCode();
-        const newBom = await bomService.cloneBom(
-          ctx,
-          {
-            baseBomId: currentBom.id,
-            bomCode: newBomCode,
-            productId: currentBom.productId,
-            bomType: "CUSTOM",
-            orderId: orderItem.orderId,
-          },
-          txCtx,
-        );
+        // 5. 判断是否已经有订单专用 BOM
+        const isCustomBom =
+          currentBom.bomType === "CUSTOM" &&
+          currentBom.orderId === orderItem.orderId;
 
-        // 6. 替换新 BOM 的 items
-        await bomService.replaceItems(newBom.id, newItems, txCtx);
+        let newBom;
 
-        // 7. 更新订单明细的 BOM 快照
-        await orderItemService.snapshotBom(
-          orderItemId,
-          newBom.id,
-          newBom.version,
-          txCtx,
-        );
+        if (isCustomBom) {
+          // 已经有订单专用 BOM，直接替换 items
+          await bomService.replaceItems(currentBom.id, newItems, txCtx);
+          newBom = currentBom;
+        } else {
+          // 第一次换料，克隆新 BOM
+          const newBomCode = `${currentBom.bomCode}-${order.orderCode}-ALT`;
+          newBom = await bomService.cloneBom(
+            ctx,
+            {
+              baseBomId: currentBom.id,
+              bomCode: newBomCode,
+              productId: currentBom.productId,
+              bomType: "CUSTOM",
+              orderId: orderItem.orderId,
+            },
+            txCtx,
+          );
 
+          // 替换新 BOM 的 items
+          await bomService.replaceItems(newBom.id, newItems, txCtx);
+
+          // 更新订单明细的 BOM 快照
+          await orderItemService.snapshotBom(
+            orderItemId,
+            newBom.id,
+            newBom.version,
+            txCtx,
+          );
+        }
         // 8. 计算未完工数
         const totalQty = createDecimal(String(orderItem.quantity));
         const fulfilledQty = createDecimal(String(orderItem.fulfilledQuantity));
@@ -1231,7 +1327,7 @@ export const createOrderApplication = (prisma: PrismaClient) => {
           },
         );
 
-        return { newBomId: newBom.id, warnings };
+        return { newBomId: newBom.id, newBomcode: newBom.BomCode, warnings };
       });
     },
     async shipOrder(ctx: RequestContext, rawdata: unknown) {
@@ -1539,11 +1635,20 @@ export const createOrderApplication = (prisma: PrismaClient) => {
     },
 
     async substituteMaterial(ctx: RequestContext, rawdata: unknown) {
-      const { productId, substituteProductId, quantity, remark } = rawdata as {
+      const {
+        productId,
+        substituteProductId,
+        quantity,
+        remark,
+        orderId,
+        orderItemId,
+      } = rawdata as {
         productId: string; // 缺口物料 ID
         substituteProductId: string; // 替代料 ID
         quantity: number; // 替代数量
         remark?: string;
+        orderId?: string; // 关联订单
+        orderItemId?: string; // 关联订单明细
       };
 
       return prisma.$transaction(async (tx) => {
@@ -1561,7 +1666,19 @@ export const createOrderApplication = (prisma: PrismaClient) => {
           });
         }
 
-        // 2. 扣减替代料库存
+        // 2. 查原物料和替代料名称（用于记录冗余字段）
+        const [originalProduct, substituteProduct] = await Promise.all([
+          prisma.product.findUnique({
+            where: { id: productId },
+            select: { name: true },
+          }),
+          prisma.product.findUnique({
+            where: { id: substituteProductId },
+            select: { name: true },
+          }),
+        ]);
+
+        // 3. 扣减替代料库存
         const result = await inventoryService.deduct(
           {
             productId: substituteProductId,
@@ -1571,7 +1688,7 @@ export const createOrderApplication = (prisma: PrismaClient) => {
           txCtx,
         );
 
-        // 3. 写库存流水，记录替代关系
+        // 4. 写库存流水，记录替代关系
         const logEntry = await invLogService.createLog(
           {
             productId: substituteProductId,
@@ -1580,13 +1697,15 @@ export const createOrderApplication = (prisma: PrismaClient) => {
             beforeQty: toPrismaDecimal(result.beforeQty),
             afterQty: toPrismaDecimal(result.afterQty),
             relatedCode: productId, // 原缺口物料 ID
-            remark: remark || `替代料出库：替代 ${productId} 缺口 ${quantity}`,
+            remark:
+              remark ||
+              `替代料出库：替代 ${originalProduct?.name || productId} 缺口 ${quantity}`,
             operatorId: ctx.operatorId,
           },
           txCtx,
         );
 
-        // 4. 记成本
+        // 5. 记成本
         await costService.recordOutboundCost(
           {
             inventoryLogId: logEntry.id,
@@ -1594,12 +1713,29 @@ export const createOrderApplication = (prisma: PrismaClient) => {
             quantity: toPrismaDecimal(result.changedQty.abs()),
             direction: "OUT",
             sourceType: "PRODUCTION",
-            remark: remark || `替代 ${productId}`,
+            orderId,
+            remark: remark || `替代 ${originalProduct?.name || productId}`,
           },
           txCtx,
         );
 
-        // 5. 审计
+        // 6. 写替代记录表（用于追溯）
+        await prisma.materialSubstitution.create({
+          data: {
+            orderId: orderId || "",
+            orderItemId: orderItemId || null,
+            originalProductId: productId,
+            originalProductName: originalProduct?.name || productId,
+            substituteProductId,
+            substituteProductName:
+              substituteProduct?.name || substituteProductId,
+            quantity,
+            operatorId: ctx.operatorId,
+            remark: remark || `替代 ${originalProduct?.name || productId} 缺口`,
+          },
+        });
+
+        // 7. 审计
         await auditService.log(
           ctx.operatorId,
           "Inventory",
@@ -1609,7 +1745,7 @@ export const createOrderApplication = (prisma: PrismaClient) => {
             field: "quantity",
             oldValue: result.beforeQty.toString(),
             newValue: result.afterQty.toString(),
-            remark: `替代料出库 ${quantity}，替代物料 ${productId}`,
+            remark: `替代料出库 ${quantity}，替代物料 ${originalProduct?.name || productId}`,
           },
         );
 

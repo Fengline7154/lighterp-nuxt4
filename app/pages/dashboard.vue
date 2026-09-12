@@ -49,13 +49,17 @@
           今日入库 {{ dashboard?.todayInbound ?? 0 }} 件
         </p>
       </div>
-      <div v-if="showLowStock" class="bg-white rounded-xl shadow p-4 lg:p-5">
+      <NuxtLink
+        v-if="showLowStock"
+        to="/inventory-alerts"
+        class="bg-white rounded-xl shadow p-4 lg:p-5 hover:shadow-md transition block"
+      >
         <p class="text-slate-500 text-sm">库存预警</p>
         <p class="text-2xl lg:text-3xl font-bold mt-2 text-red-500">
           {{ dashboard?.lowStock ?? "-" }}
         </p>
         <p class="text-xs text-slate-400 mt-1">个物料低于安全线</p>
-      </div>
+      </NuxtLink>
       <NuxtLink
         v-if="showShortage"
         to="/shortage"
@@ -145,10 +149,12 @@
 import { Chart, registerables } from "chart.js";
 
 definePageMeta({ middleware: ["auth" as any] });
+
 const authStore = useAuthStore();
 
 Chart.register(...registerables);
 
+// ==================== 基础状态 ====================
 const period = ref("month");
 const periods = [
   { key: "week", label: "周" },
@@ -156,6 +162,34 @@ const periods = [
   { key: "year", label: "年" },
 ];
 
+// ==================== 权限控制 ====================
+const showCharts = computed(() =>
+  authStore.hasRole([
+    "admin",
+    "manager",
+    "seniorStaff",
+    "warehouseKeeper",
+    "accountant",
+  ]),
+);
+
+const showPendingOrders = computed(() =>
+  authStore.hasRole(["admin", "manager", "seniorStaff", "staff", "accountant"]),
+);
+
+const showProducing = computed(() =>
+  authStore.hasRole(["admin", "manager", "seniorStaff", "staff"]),
+);
+
+const showLowStock = computed(() =>
+  authStore.hasRole(["admin", "manager", "warehouseKeeper"]),
+);
+
+const showShortage = computed(() =>
+  authStore.hasRole(["admin", "manager", "warehouseKeeper"]),
+);
+
+// ==================== 快捷入口 ====================
 const quickEntries = computed(() => {
   const all = [
     {
@@ -207,53 +241,118 @@ const quickEntries = computed(() => {
   ];
   return all.filter((e) => authStore.hasRole(e.roles));
 });
-const showCharts = computed(() =>
-  authStore.hasRole([
-    "admin",
-    "manager",
-    "seniorStaff",
-    "warehouseKeeper",
-    "accountant",
-  ]),
-);
-const showPendingOrders = computed(() =>
-  authStore.hasRole(["admin", "manager", "seniorStaff", "staff", "accountant"]),
-);
-const showProducing = computed(() =>
-  authStore.hasRole(["admin", "manager", "seniorStaff", "staff"]),
-);
-const showLowStock = computed(() =>
-  authStore.hasRole(["admin", "manager", "warehouseKeeper"]),
-);
-const showShortage = computed(() =>
-  authStore.hasRole(["admin", "manager", "warehouseKeeper"]),
-);
 
-const { data: dashboard } = await useFetch("/api/analytics/dashboard");
-const { data: shortageData } = await useFetch("/api/analytics/shortage");
+// ==================== 数据加载 ====================
+const dashboard = ref<any>(null);
+const shortageData = ref<any>(null);
+const orderProgressData = ref<any>(null);
+const productionData = ref<any>(null);
+const categoryData = ref<any>(null);
+
 const shortageCount = computed(
   () => (shortageData.value as any)?.shortages?.length ?? null,
 );
 
-// 订单进度
-const { data: orderProgressData } = await useFetch(
-  "/api/analytics/order-progress",
-);
 const orderProgress = computed(
   () => (orderProgressData.value as any)?.data || [],
 );
 
-// 图表 refs
+const loadDashboard = async () => {
+  try {
+    dashboard.value = await $fetch("/api/analytics/dashboard");
+  } catch {
+    dashboard.value = null;
+  }
+};
+
+const loadShortage = async () => {
+  try {
+    shortageData.value = await $fetch("/api/analytics/shortage");
+  } catch {
+    shortageData.value = null;
+  }
+};
+
+const loadOrderProgress = async () => {
+  try {
+    orderProgressData.value = await $fetch("/api/analytics/order-progress");
+  } catch {
+    orderProgressData.value = null;
+  }
+};
+
+const loadProductionData = async () => {
+  try {
+    productionData.value = await $fetch(
+      "/api/analytics/monthly-production-summary",
+      { query: { period: period.value } },
+    );
+  } catch {
+    productionData.value = null;
+  }
+};
+
+const loadCategoryData = async () => {
+  try {
+    categoryData.value = await $fetch("/api/analytics/inventory-category");
+  } catch {
+    categoryData.value = null;
+  }
+};
+
+// ==================== 按权限按需加载 ====================
+watch(
+  () => authStore.user,
+  async (user) => {
+    if (!user) return;
+
+    const loadTasks: Promise<void>[] = [];
+
+    // 核心指标：有待审核、生产中、库存预警、缺料任一权限就加载
+    if (
+      showPendingOrders.value ||
+      showProducing.value ||
+      showLowStock.value ||
+      showShortage.value
+    ) {
+      loadTasks.push(loadDashboard());
+    }
+
+    // 缺料预警：有权限才加载
+    if (showShortage.value) {
+      loadTasks.push(loadShortage());
+    }
+
+    // 订单进度：有待审核、生产中、缺料任一权限就加载
+    if (showPendingOrders.value || showProducing.value || showShortage.value) {
+      loadTasks.push(loadOrderProgress());
+    }
+
+    // 图表：有图表权限才加载
+    if (showCharts.value) {
+      loadTasks.push(loadProductionData());
+      loadTasks.push(loadCategoryData());
+    }
+
+    await Promise.all(loadTasks);
+  },
+  { immediate: true },
+);
+
+// 周期切换时重新加载产量数据（仅在有图表权限时）
+watch(period, () => {
+  if (showCharts.value) {
+    loadProductionData();
+  }
+});
+
+// ==================== 图表渲染 ====================
 const productionChartRef = ref<HTMLCanvasElement | null>(null);
 const categoryChartRef = ref<HTMLCanvasElement | null>(null);
 let productionChart: Chart | null = null;
 let categoryChart: Chart | null = null;
 
-// 产量趋势
-const { data: productionData } = await useFetch(
-  "/api/analytics/monthly-production-summary",
-  { query: computed(() => ({ period: period.value })), watch: [period] },
-);
+// 产量趋势图
 watch(
   [productionData, productionChartRef],
   () => {
@@ -265,7 +364,7 @@ watch(
       data: {
         labels: raw.map((d: any) =>
           period.value === "year" ? d.date : d.date.slice(5),
-        ), // 月显示"01月"，周/月显示"MM-DD"
+        ),
         datasets: [
           {
             label: "产量",
@@ -288,10 +387,7 @@ watch(
   { immediate: true },
 );
 
-// 库存分类
-const { data: categoryData } = await useFetch(
-  "/api/analytics/inventory-category",
-);
+// 库存分类图
 watch(
   [categoryData, categoryChartRef],
   () => {
@@ -320,6 +416,7 @@ watch(
   { immediate: true },
 );
 
+// ==================== 清理 ====================
 onUnmounted(() => {
   productionChart?.destroy();
   categoryChart?.destroy();

@@ -184,5 +184,79 @@ export const createProcessService = (prisma: PrismaClient) => {
         return planRepo.findByOrderItemId(orderItemId, txCtx);
       });
     },
+    /** 添加工序计划（不影响已有工序） */
+    async addOrderPlan(
+      orderId: string,
+      orderItemId: string,
+      plan: {
+        processId?: string | null;
+        sequence: number;
+        processName: string;
+        wageType?: "HOURLY" | "PIECE";
+        standardHours?: number | string;
+        hourlyRate?: number | string;
+        unitPrice?: number | string;
+      },
+      tx?: TxContext,
+    ) {
+      return runInTransaction(tx, prisma, async (txCtx) => {
+        // 查现有工序（完整字段）
+
+        const existing = await planRepo.findForValidation(orderItemId, txCtx);
+
+        // 校验序号不重复
+        const seqExists = existing.some(
+          (p) => Number(p.sequence) === Number(plan.sequence),
+        );
+        if (seqExists) {
+          throw createError({
+            statusCode: 400,
+            message: `序号 ${plan.sequence} 已存在，请使用其他序号`,
+          });
+        }
+
+        // 校验工序名称不重复
+        const nameExists = existing.some(
+          (p) => p.processName === plan.processName,
+        );
+        if (nameExists) {
+          throw createError({
+            statusCode: 400,
+            message: `工序 "${plan.processName}" 已存在`,
+          });
+        }
+
+        // 查订单明细的需求数量
+        const orderItem = await prisma.orderItem.findUnique({
+          where: { id: orderItemId },
+          select: { quantity: true },
+        });
+
+        return planRepo.create(
+          {
+            orderId,
+            orderItemId,
+            processId: plan.processId || null,
+            sequence: plan.sequence,
+            processName: plan.processName,
+            wageType: plan.wageType || "HOURLY",
+            standardHours:
+              plan.standardHours != null
+                ? toPrismaDecimal(createDecimal(plan.standardHours))
+                : undefined,
+            hourlyRate:
+              plan.hourlyRate != null
+                ? toPrismaDecimal(createDecimal(plan.hourlyRate))
+                : undefined,
+            unitPrice:
+              plan.unitPrice != null
+                ? toPrismaDecimal(createDecimal(plan.unitPrice))
+                : undefined,
+            assignedQty: orderItem ? String(orderItem.quantity) : "0",
+          },
+          txCtx,
+        );
+      });
+    },
   };
 };

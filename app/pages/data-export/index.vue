@@ -149,6 +149,7 @@ const handleUpload = async (event: Event) => {
       method: "POST",
       body: formData,
     });
+
     importResult.value = res;
     if (res.success) {
       toast.success("导入成功");

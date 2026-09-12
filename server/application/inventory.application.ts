@@ -271,6 +271,7 @@ export const createInventoryApplication = (prisma: PrismaClient) => {
             quantity: data.quantity,
             type,
             locationId: data.locationId,
+            remark: data.remark,
           },
           txCtx,
         );
@@ -477,25 +478,41 @@ export const createInventoryApplication = (prisma: PrismaClient) => {
       return prisma.$transaction(async (tx) => {
         const txCtx = createPrismaTxContext(tx);
 
-        // 校验：已有出入库记录的产品不能初始化
+        // 1. 检查同一次请求里的重复产品
+        const productIds = data.items.map((i) => i.productId);
+        const duplicateIds = productIds.filter(
+          (id, index) => productIds.indexOf(id) !== index,
+        );
+        if (duplicateIds.length > 0) {
+          const dupNames = [...new Set(duplicateIds)]
+            .map(
+              (id) => data.items.find((i) => i.productId === id)?.productName,
+            )
+            .join("、");
+          throw createError({
+            statusCode: 400,
+            message: `初始化列表中存在重复产品：${dupNames}，请删除一条或合并数量后重新提交`,
+          });
+        }
+
+        // 2. 检查产品是否已有任何库存记录
         for (const item of data.items) {
-          const existingLog = await invLogService.findFirst(
-            {
-              productId: item.productId,
-              type: { not: "INIT" },
-            },
-            txCtx,
-          );
-          if (existingLog) {
+          const existing = await prisma.inventory.findUnique({
+            where: { productId: item.productId },
+            select: { id: true },
+          });
+          if (existing) {
             throw createError({
               statusCode: 400,
-              message: `产品 [${item.productName}] 已有正式出入库记录，不能使用初始化类型，请通过普通入库录入`,
+              message: `产品 [${item.productName}] 已有库存记录，不能重复初始化，请使用普通入库`,
             });
           }
         }
 
+        // 3. 执行初始化
         const results = await inventoryService.initStock(data.items, txCtx);
 
+        // 4. 写流水和审计
         for (const result of results) {
           await invLogService.createLog(
             {

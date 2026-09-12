@@ -3,7 +3,7 @@ import { usePrisma } from "~~/server/config/prisma";
 import { requirePermission } from "~~/server/utils/requirePermission";
 import { buildRequestContext } from "~~/server/utils/buildRequestContext";
 import { createSequenceService } from "~~/server/services/sequence.service";
-
+import iconv from "iconv-lite";
 export default defineEventHandler(async (event) => {
   await requirePermission(event, "data:export");
 
@@ -17,7 +17,17 @@ export default defineEventHandler(async (event) => {
     throw createError({ statusCode: 400, message: "请上传 CSV 文件" });
   }
 
-  const content = Buffer.from(file.data).toString("utf-8");
+  const rawBuffer = Buffer.from(file.data);
+  let content: string;
+  try {
+    content = rawBuffer.toString("utf-8");
+    if (content.includes("\uFFFD")) {
+      content = iconv.decode(rawBuffer, "gbk");
+    }
+  } catch {
+    content = iconv.decode(rawBuffer, "gbk");
+  }
+  content = content.replace(/^\uFEFF/, "");
   const lines = content.split("\n").filter((l) => l.trim());
 
   if (lines.length < 2) {
@@ -99,7 +109,7 @@ export default defineEventHandler(async (event) => {
     const packUnit = row[packUnitIdx] || "";
 
     // 跳过示例行
-    if (name === "帐篷布" && spec === "210D牛津布") continue;
+    if (name === "帐篷布(示例,可删除本行)" && spec === "210D牛津布") continue;
 
     if (!name) {
       errors.push(`第 ${lineNum} 行：名称为空`);

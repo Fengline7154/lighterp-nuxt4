@@ -1,5 +1,6 @@
 // https://nuxt.com/docs/api/configuration/nuxt-config
 export default defineNuxtConfig({
+  devtools: { enabled: false },
   ssr: false,
   compatibilityDate: "2025-07-15",
   modules: [
@@ -19,6 +20,7 @@ export default defineNuxtConfig({
     jwtRefreshPrivateKey: process.env.NUXT_JWT_REFRESH_PRIVATE_KEY,
     jwtRefreshPublicKey: process.env.NUXT_JWT_REFRESH_PUBLIC_KEY,
     postgresUrl: process.env.NUXT_POSTGRES_URL || process.env.DATABASE_URL,
+    setupSecret: process.env.NUXT_SETUP_SECRET,
   },
   nitro: {
     esbuild: {

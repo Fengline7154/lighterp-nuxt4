@@ -161,15 +161,15 @@ enum ReservationType {
 
 // 库存表（用于锁定、事务）
 model Inventory {
-  id           String   @id @default(uuid())
-  productId    String   @unique
-  product      Product  @relation(fields: [productId], references: [id])
-  productName  String
-  quantity     Decimal  @default(0) @db.Decimal(12, 4) // 当前库存数量
-  reservedQty  Decimal  @default(0) @db.Decimal(12, 4) // 已预留数量（审批通过但未出库）
-  lockVersion  Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id          String   @id @default(uuid())
+  productId   String   @unique
+  product     Product  @relation(fields: [productId], references: [id])
+  productName String
+  quantity    Decimal  @default(0) @db.Decimal(12, 4) // 当前库存数量
+  reservedQty Decimal  @default(0) @db.Decimal(12, 4) // 已预留数量（审批通过但未出库）
+  lockVersion Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@map("inventories")
 }
@@ -315,6 +315,7 @@ model Product {
   inventoryLogs           InventoryLog[]
   inventoryLocations      InventoryLocation[]
   purchaseOrderItems      PurchaseOrderItem[]
+  inventoryAlert          InventoryAlert?
 
   @@map("products")
 }
@@ -606,36 +607,38 @@ model ProductionLog {
 }
 
 model OrderMiscCost {
-  id          String       @id @default(uuid())
-  orderId     String?      // 改为可选，支持不绑定订单
-  order       Order?       @relation(fields: [orderId], references: [id])
-  workerId    String?      // 可选，关联正式员工
-  worker      Worker?      @relation(fields: [workerId], references: [id])
-  workerName  String?      // 冗余员工姓名（临时工手填，不关联 Worker 时用）
-  costType    MiscCostType @default(OTHER)  // 费用类型
-  description String       // 费用说明
-  amount      Decimal      @db.Decimal(10, 2)  // 金额
-  remark      String?      // 备注
+  id          String         @id @default(uuid())
+  orderId     String? // 改为可选，支持不绑定订单
+  order       Order?         @relation(fields: [orderId], references: [id])
+  workerId    String? // 可选，关联正式员工
+  worker      Worker?        @relation(fields: [workerId], references: [id])
+  workerName  String? // 冗余员工姓名（临时工手填，不关联 Worker 时用）
+  costType    MiscCostType   @default(OTHER) // 费用类型
+  description String // 费用说明
+  amount      Decimal        @db.Decimal(10, 2) // 金额
+  remark      String? // 备注
   status      MiscCostStatus @default(ACTIVE)
-  operatorId  String       // 录入人
-  operator    User         @relation(fields: [operatorId], references: [id])
-  createdAt   DateTime     @default(now())
+  operatorId  String // 录入人
+  operator    User           @relation(fields: [operatorId], references: [id])
+  createdAt   DateTime       @default(now())
 
   @@index([orderId])
   @@index([workerId])
   @@index([createdAt])
   @@map("order_misc_costs")
 }
+
 enum MiscCostStatus {
-  ACTIVE     // 有效
-  VOIDED     // 已作废
+  ACTIVE // 有效
+  VOIDED // 已作废
 }
+
 enum MiscCostType {
-  TRANSPORT   // 运输
-  HANDLING    // 搬运
-  TEMP_LABOR  // 临时工
-  OUTSOURCE   // 外包
-  OTHER       // 其他
+  TRANSPORT // 运输
+  HANDLING // 搬运
+  TEMP_LABOR // 临时工
+  OUTSOURCE // 外包
+  OTHER // 其他
 }
 
 // 员工表
@@ -803,4 +806,36 @@ model PurchaseReceipt {
   @@index([orderId])
   @@index([createdAt])
   @@map("purchase_receipts")
+}
+
+//库存预警表
+model InventoryAlert {
+  id        String   @id @default(uuid())
+  productId String   @unique // 一个产品一条预警配置
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  threshold Decimal  @db.Decimal(12, 4) // 安全库存线
+  remark    String? // 备注（如：面料低于100米需补货）
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("inventory_alerts")
+}
+
+model MaterialSubstitution {
+  id                    String   @id @default(uuid())
+  orderId               String // 关联订单
+  orderItemId           String? // 关联订单明细
+  originalProductId     String // 原物料（缺口物料）
+  originalProductName   String // 原物料名称（冗余，方便查询）
+  substituteProductId   String // 替代料
+  substituteProductName String // 替代料名称（冗余）
+  quantity              Decimal  @db.Decimal(12, 4) // 替代数量
+  operatorId            String // 操作人
+  remark                String? // 备注
+  createdAt             DateTime @default(now())
+
+  @@index([orderId])
+  @@index([originalProductId])
+  @@index([createdAt])
+  @@map("material_substitutions")
 }

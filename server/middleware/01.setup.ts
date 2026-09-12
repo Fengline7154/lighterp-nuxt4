@@ -23,7 +23,6 @@ export default defineEventHandler(async (event) => {
 
   const sessionRedis = createRedisClient("session");
   const cached = (await sessionRedis.get(CACHE_KEY)) as boolean | null;
-
   if (cached === true) {
     return; // 已初始化，直接放行
   }
