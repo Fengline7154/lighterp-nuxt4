@@ -98,8 +98,8 @@ export const createUserService = (
         name: data.name,
         password: hashed,
         department: data.department || undefined,
-        email: data.email || undefined,
-        phone: data.phone || undefined,
+        email: email || undefined,
+        phone: phone || undefined,
         role: data.role,
         permissions,
       };

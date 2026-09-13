@@ -61,7 +61,7 @@ export default defineEventHandler(async (event) => {
     },
     user,
   );
-
+  
   // 写入初始化状态缓存
   const sessionRedis = createRedisClient("session");
   await sessionRedis.set("system:initialized", true, 180 * 24 * 3600);
