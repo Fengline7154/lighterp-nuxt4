@@ -149,6 +149,8 @@
 
 <script setup lang="ts">
 definePageMeta({ middleware: ["auth" as any] });
+const route = useRoute();
+
 const toast = useToast();
 const { apiFetch } = useApi();
 
@@ -161,7 +163,7 @@ const productSearch = ref("");
 const form = reactive({
   productId: "",
   quantity: 1,
-  type: "SALES_OUT",
+  type: (route.query.type as string) || "SALES_OUT", // ← 改这一行
   remark: "",
   relatedCode: "",
 });

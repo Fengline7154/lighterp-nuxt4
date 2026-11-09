@@ -65,7 +65,6 @@
                 >
                   需求量
                 </th>
-
                 <th
                   class="text-right px-4 py-2 text-xs font-medium text-slate-500 uppercase"
                 >
@@ -84,7 +83,6 @@
                   <span class="text-xs text-slate-400">{{ m.unit }}</span>
                 </td>
                 <td class="px-4 py-2 text-right">{{ m.demand }}</td>
-
                 <td
                   class="px-4 py-2 text-right font-medium"
                   :class="m.shortage > 0 ? 'text-red-600' : 'text-green-600'"
@@ -107,7 +105,6 @@
             </div>
             <div class="flex justify-between text-xs mt-1">
               <span>需求: {{ m.demand }}</span>
-
               <span
                 :class="m.shortage > 0 ? 'text-red-600' : 'text-green-600'"
                 class="font-medium"
@@ -327,7 +324,7 @@
 
         <div class="mt-4 flex gap-2">
           <NuxtLink
-            v-if="processPlans.length > 0"
+            v-if="processPlans.length > 0 && can('production:report')"
             :to="`/orders/${order?.id}/production`"
             class="flex-1 text-center min-h-[44px] py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm"
           >
@@ -337,7 +334,9 @@
             v-else
             class="flex-1 text-center min-h-[44px] py-2 bg-slate-300 text-slate-500 rounded-lg text-sm"
           >
-            暂无工序，无法报工
+            {{
+              processPlans.length === 0 ? "暂无工序，无法报工" : "无报工权限"
+            }}
           </span>
           <button
             @click="showProcessViewer = false"
@@ -635,7 +634,6 @@
                 :placeholder="`新用量（默认 ${row.oldQuantity}）`"
                 class="flex-1 min-h-[44px] border border-slate-300 rounded-lg px-3 py-2 text-sm"
               />
-
               <button
                 @click="replaceBomRows.splice(index, 1)"
                 class="min-h-[44px] min-w-[44px] text-red-400 hover:text-red-600"
@@ -1151,7 +1149,12 @@
               {{ statusLabel(order.status) }}</span
             >
           </Info>
-          <Info label="总金额" :value="`¥${order.totalAmount}`" />
+          <Info label="总金额">
+            <span v-if="order.totalAmount === '***'" class="text-slate-400"
+              >***</span
+            >
+            <span v-else>¥{{ order.totalAmount }}</span>
+          </Info>
           <Info label="客户" :value="order.customer?.name || '-'" />
           <Info
             label="制单人"
@@ -1245,11 +1248,20 @@
                     >{{ item.shippedQuantity || 0 }}/{{ item.quantity }}</span
                   >
                 </td>
-                <td class="py-2 px-3 text-right">¥{{ item.unitPrice }}</td>
                 <td class="py-2 px-3 text-right">
-                  ¥{{
-                    (Number(item.quantity) * Number(item.unitPrice)).toFixed(2)
-                  }}
+                  {{ item.unitPrice === null ? "***" : `¥${item.unitPrice}` }}
+                </td>
+                <td class="py-2 px-3 text-right">
+                  <span v-if="item.unitPrice === null" class="text-slate-400"
+                    >***</span
+                  >
+                  <template v-else>
+                    ¥{{
+                      (Number(item.quantity) * Number(item.unitPrice)).toFixed(
+                        2,
+                      )
+                    }}
+                  </template>
                 </td>
               </tr>
             </tbody>
@@ -1295,68 +1307,80 @@
               >
             </div>
             <div class="flex justify-between text-xs mt-1 text-slate-500">
-              <span>单价：¥{{ item.unitPrice }}</span>
-              <span
-                >小计：¥{{
+              <span>
+                单价：{{
+                  item.unitPrice === null ? "***" : `¥${item.unitPrice}`
+                }}
+              </span>
+              <span v-if="item.unitPrice === null" class="text-slate-400">
+                小计：***
+              </span>
+              <span v-else>
+                小计：¥{{
                   (Number(item.quantity) * Number(item.unitPrice)).toFixed(2)
-                }}</span
-              >
+                }}
+              </span>
             </div>
           </div>
         </div>
       </div>
 
-      <!-- 状态操作按钮 -->
+      <!-- 状态操作按钮（按权限隐藏） -->
       <div
         class="flex gap-2 flex-wrap"
         v-if="order.status !== 'COMPLETED' && order.status !== 'CANCELLED'"
       >
         <template v-if="order.orderType === 'STANDARD'">
           <button
-            v-if="order.status === 'PENDING'"
+            v-if="order.status === 'PENDING' && can('order:approve')"
             @click="openApproveModal"
             class="min-h-[44px] px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition text-sm"
           >
             审核通过
           </button>
           <button
-            v-if="order.status === 'APPROVED'"
+            v-if="order.status === 'APPROVED' && can('order:edit')"
             @click="changeStatus('PRODUCING')"
             class="min-h-[44px] px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition text-sm"
           >
             开始生产
           </button>
           <button
-            v-if="order.status === 'PRODUCING'"
+            v-if="order.status === 'PRODUCING' && can('order:edit')"
             @click="changeStatus('READY')"
             class="min-h-[44px] px-4 py-2 bg-teal-500 text-white rounded-lg hover:bg-teal-600 transition text-sm"
           >
             标记备齐
           </button>
           <button
-            v-if="order.status === 'APPROVED'"
+            v-if="order.status === 'APPROVED' && can('order:edit')"
             @click="changeStatus('READY')"
             class="min-h-[44px] px-4 py-2 bg-teal-500 text-white rounded-lg hover:bg-teal-600 transition text-sm"
           >
             生产齐备
           </button>
-          <!-- 生产相关操作 -->
           <button
-            v-if="order.status === 'PRODUCING'"
+            v-if="order.status === 'PRODUCING' && can('production:report')"
             @click="goToProduction"
             class="min-h-[44px] px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition text-sm"
           >
             生产报工
           </button>
           <button
-            v-if="order.status === 'APPROVED' || order.status === 'PRODUCING'"
+            v-if="
+              (order.status === 'APPROVED' || order.status === 'PRODUCING') &&
+              can('inventory:adjust')
+            "
             @click="openReceiptModal"
             class="min-h-[44px] px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm"
           >
             入库
           </button>
           <button
-            v-if="order.status === 'APPROVED' || order.status === 'PRODUCING'"
+            v-if="
+              (order.status === 'APPROVED' || order.status === 'PRODUCING') &&
+              can('bom:edit')
+            "
             @click="openReplaceBomModal"
             class="min-h-[44px] px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition text-sm"
           >
@@ -1364,8 +1388,8 @@
           </button>
           <button
             v-if="
-              order?.status &&
-              ['APPROVED', 'PRODUCING', 'READY'].includes(order.status)
+              ['APPROVED', 'PRODUCING', 'READY'].includes(order.status) &&
+              can('order:ship')
             "
             @click="openShipModal"
             class="min-h-[44px] px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm"
@@ -1373,7 +1397,7 @@
             发货
           </button>
           <button
-            v-if="order.status === 'READY' && canComplete"
+            v-if="order.status === 'READY' && canComplete && can('order:edit')"
             @click="changeStatus('COMPLETED')"
             class="min-h-[44px] px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition text-sm"
           >
@@ -1382,57 +1406,61 @@
         </template>
         <template v-else>
           <button
-            v-if="order.status === 'PENDING'"
+            v-if="order.status === 'PENDING' && can('order:approve')"
             @click="openApproveModal"
             class="min-h-[44px] px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition text-sm"
           >
             审核通过
           </button>
           <button
-            v-if="order.status === 'APPROVED'"
+            v-if="order.status === 'APPROVED' && can('order:edit')"
             @click="changeStatus('SAMPLING')"
             class="min-h-[44px] px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition text-sm"
           >
             开始打样
           </button>
           <button
-            v-if="order.status === 'SAMPLING'"
+            v-if="order.status === 'SAMPLING' && can('inventory:adjust')"
             @click="showPickModal = true"
             class="min-h-[44px] px-4 py-2 bg-orange-500 text-white rounded-lg hover:bg-orange-600 transition text-sm"
           >
             打样领料
           </button>
           <button
-            v-if="order.status === 'SAMPLING'"
+            v-if="
+              order.status === 'SAMPLING' &&
+              (order.orderType === 'VARIANT'
+                ? can('bom:edit')
+                : can('bom:create'))
+            "
             @click="goToCreateBom"
             class="min-h-[44px] px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition text-sm"
           >
             {{ order.orderType === "VARIANT" ? "修改 BOM" : "创建 BOM" }}
           </button>
           <button
-            v-if="order.status === 'SAMPLING'"
+            v-if="order.status === 'SAMPLING' && can('order:edit')"
             @click="changeStatus('SAMPLED')"
             class="min-h-[44px] px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm"
           >
             打样完成
           </button>
           <button
-            v-if="order.status === 'SAMPLED'"
+            v-if="order.status === 'SAMPLED' && can('order:edit')"
             @click="changeStatus('PRODUCING')"
             class="min-h-[44px] px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition text-sm"
           >
             开始生产
           </button>
           <button
-            v-if="order.status === 'PRODUCING'"
+            v-if="order.status === 'PRODUCING' && can('order:edit')"
             @click="changeStatus('READY')"
             class="min-h-[44px] px-4 py-2 bg-teal-500 text-white rounded-lg hover:bg-teal-600 transition text-sm"
           >
             标记备齐
           </button>
-
           <button
-            v-if="order.status === 'READY'"
+            v-if="order.status === 'READY' && can('order:edit')"
             @click="changeStatus('COMPLETED')"
             class="min-h-[44px] px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition text-sm"
           >
@@ -1447,6 +1475,7 @@
           修改价格
         </button>
         <button
+          v-if="can('order:cancel')"
           @click="changeStatus('CANCELLED')"
           class="min-h-[44px] px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition text-sm"
         >
@@ -1527,13 +1556,17 @@
 <script setup lang="ts">
 import type { OrderStatus } from "~~/prisma/generated/client";
 definePageMeta({ middleware: ["auth" as any] });
+const authStore = useAuthStore();
+
+// 权限判断简写（admin 的 "*" 由 hasPermission 内部处理）
+const can = (perm: string) => authStore.hasPermission(perm);
 
 // ==================== 基础工具 ====================
 const { apiFetch } = useApi();
 const toast = useToast();
 const route = useRoute();
-const showMoreMenu = ref(false);
-//自定义警告弹窗
+
+// 自定义警告弹窗
 const showConfirmModal = ref(false);
 const confirmMessage = ref("");
 const confirmLoading = ref(false);
@@ -1556,6 +1589,7 @@ const handleConfirm = async () => {
     pendingConfirmAction.value = null;
   }
 };
+
 // ==================== 订单数据 ====================
 const {
   data: order,
@@ -1593,7 +1627,7 @@ const openReceiptModal = () => {
   receiptForm.orderItemId = "";
   receiptForm.quantity = 1;
   receiptForm.remark = "";
-  receiptForm.locationId = defaultLocation.value?.id || ""; // 自动选默认库位
+  receiptForm.locationId = defaultLocation.value?.id || "";
   showReceiptModal.value = true;
 };
 
@@ -1607,14 +1641,7 @@ const receiptUnit = computed(() => {
   return p?.unit || "";
 });
 
-/**
- * 提交入库
- * 后端返回 { receipt, warnings }
- * warnings 为倒冲物料缺口警告，非空时弹窗展示
- */
-
 const doReceipt = async () => {
-  // 入库提交逻辑
   const result = await apiFetch<any>(
     `/api/orders/${route.params.id}/receipts`,
     {
@@ -1628,7 +1655,6 @@ const doReceipt = async () => {
     },
   );
 
-  // 处理字符串警告
   const stringWarnings = (result?.warnings || []).filter(
     (w: any) => typeof w === "string",
   );
@@ -1636,7 +1662,6 @@ const doReceipt = async () => {
     toast.error(stringWarnings.join("；"));
   }
 
-  // 处理结构化缺口警告
   const shortageList = (result?.warnings || []).filter(
     (w: any) => typeof w === "object" && w.productId,
   );
@@ -1654,6 +1679,7 @@ const doReceipt = async () => {
 
   await loadOrder();
 };
+
 const handleReceipt = async () => {
   if (!receiptForm.orderItemId) return toast.error("请选择产品");
 
@@ -1684,7 +1710,8 @@ interface ShortageWarning {
 }
 
 const shortageWarnings = ref<ShortageWarning[]>([]);
-//替代料弹窗
+
+// ==================== 替代料记录 ====================
 const showSubstitutionModal = ref(false);
 const substitutions = ref<any[]>([]);
 
@@ -1699,15 +1726,12 @@ const openSubstitutionViewer = async () => {
     toast.error(e, "加载替代记录失败");
   }
 };
-// ===================== 倒冲替代料 =====================
+
+// ==================== 倒冲替代料 ====================
 const showSubstitutePicker = ref<number | null>(null);
 const substituteSearch = ref("");
 const substituteQty = ref(0);
 
-/**
- * 过滤可选替代料
- * 小厂场景：任意物料均可选作替代料，不做类别限制
- */
 const filteredSubstituteProducts = computed(() => {
   if (!substituteSearch.value.trim()) {
     return allProducts.value.filter(
@@ -1727,20 +1751,12 @@ const filteredSubstituteProducts = computed(() => {
   );
 });
 
-/**
- * 打开替代料选择器
- * @param index 缺口警告在 shortageWarnings 中的索引
- */
 const openSubstitutePicker = (index: number) => {
   showSubstitutePicker.value = index;
   substituteSearch.value = "";
   substituteQty.value = Number(shortageWarnings.value[index]?.shortageQty || 0);
 };
 
-/**
- * 选择替代料并提交
- * @param p 选中的替代料产品对象
- */
 const selectSubstitute = async (p: any) => {
   if (showSubstitutePicker.value === null) return;
   const warning = shortageWarnings.value[showSubstitutePicker.value];
@@ -1759,11 +1775,9 @@ const selectSubstitute = async (p: any) => {
       },
     });
 
-    // 替代完成后从警告列表移除该条缺口
     shortageWarnings.value.splice(showSubstitutePicker.value, 1);
     showSubstitutePicker.value = null;
 
-    // 所有缺口处理完毕则关闭弹窗
     if (shortageWarnings.value.length === 0) {
       showShortageModal.value = false;
       toast.success("替代完成");
@@ -1774,6 +1788,7 @@ const selectSubstitute = async (p: any) => {
     toast.error(e, "替代失败");
   }
 };
+
 // ==================== 物料需求查看 ====================
 const showMaterialRequirements = ref(false);
 const materialRequirements = ref<any[]>([]);
@@ -1796,6 +1811,7 @@ const showPriceModal = ref(false);
 const priceEdits = reactive<Record<string, number>>({});
 
 const canEditPrice = computed(() => {
+  if (!authStore.hasPermission("order:edit")) return false;
   const s = order.value?.status;
   return s && !["PRODUCING", "READY", "COMPLETED", "CANCELLED"].includes(s);
 });
@@ -1844,19 +1860,18 @@ const goToProduction = async () => {
     toast.error(e, "检查工序失败");
   }
 };
+
 // ==================== 工序查看与编辑 ====================
 const showProcessViewer = ref(false);
 const processPlans = ref<any[]>([]);
 
+// 需要 process:manage 权限 + 订单状态可编辑
 const canEditPlans = computed(() => {
+  if (!authStore.hasPermission("process:manage")) return false;
   const s = order.value?.status;
   return s && ["APPROVED", "PRODUCING"].includes(s);
 });
 
-/**
- * 按产品分组的工序计划
- * 每个产品包含 orderItemId，确保工序删光后仍能新增
- */
 const productGroups = computed(() => {
   const map = new Map<
     string,
@@ -1868,7 +1883,6 @@ const productGroups = computed(() => {
     }
   >();
 
-  // 先遍历工序计划，按产品分组
   for (const plan of processPlans.value) {
     const key = plan.orderItemId || plan.productId;
     if (!map.has(key)) {
@@ -1883,7 +1897,6 @@ const productGroups = computed(() => {
     map.get(key)!.plans.push(plan);
   }
 
-  // 补全订单明细中可能没有工序计划的产品
   if (order.value?.items) {
     for (const item of order.value.items) {
       const existing = [...map.values()].find((g) => g.orderItemId === item.id);
@@ -1945,7 +1958,6 @@ const openAddPlan = async (product: any) => {
   addPlanForm.unitPrice = 0;
   addPlanForm.standardHours = 0;
 
-  // 加载该产品的工序模板
   try {
     const res = await $fetch(`/api/routings?productId=${product.productId}`);
     productTemplates.value = (res as any)?.data || [];
@@ -1956,7 +1968,6 @@ const openAddPlan = async (product: any) => {
   showAddPlanModal.value = true;
 };
 
-// 选择模板后自动填充表单
 const onTemplateSelected = () => {
   if (!addPlanForm.selectedTemplateId) return;
   const template = productTemplates.value.find(
@@ -2090,14 +2101,12 @@ const reserveInputs = reactive<Record<string, number>>({});
 
 const openApproveModal = async () => {
   if (order.value?.orderType !== "STANDARD") {
-    // 变型品/定制品：直接确认审批
     if (confirm("确认审核通过该订单？审批通过后可开始打样流程。")) {
       await changeStatus("APPROVED");
     }
     return;
   }
 
-  // 标准品：弹预留设置
   order.value?.items.forEach((item: any) => {
     reserveInputs[item.id] = 0;
   });
@@ -2123,7 +2132,6 @@ const handleApproveWithReservations = async () => {
     })) || [];
 
   try {
-    // 先查物料需求
     const reqRes = (await $fetch(
       `/api/orders/${route.params.id}/material-requirements`,
     )) as any;
@@ -2168,7 +2176,6 @@ const changeStatus = async (status: string) => {
 
 // ==================== 打样领料 ====================
 const showPickModal = ref(false);
-const pickForm = reactive({ orderItemId: "", quantity: 1, locationId: "" });
 const showPickProductPicker = ref<number | null>(null);
 const pickProductSearch = ref("");
 const pickItems = reactive<
@@ -2180,16 +2187,6 @@ const pickItems = reactive<
     unit: string;
   }>
 >([{ productId: "", productCode: "", productName: "", quantity: 1, unit: "" }]);
-
-const pickUnit = computed(() => {
-  if (!pickForm.orderItemId) return "";
-  const item = order.value?.items?.find(
-    (i: any) => i.id === pickForm.orderItemId,
-  );
-  if (!item) return "";
-  const p = allProducts.value.find((p: any) => p.id === item.productId);
-  return p?.unit || "";
-});
 
 const filteredPickProducts = computed(() => {
   if (!pickProductSearch.value.trim()) return allProducts.value;
@@ -2268,6 +2265,7 @@ const goToCreateBom = async () => {
     );
   }
 };
+
 // ==================== 更换 BOM ====================
 const showReplaceBomModal = ref(false);
 const replaceBomForm = reactive({
@@ -2326,7 +2324,6 @@ const addReplaceBomRow = () => {
   });
 };
 
-// 选择订单明细产品后，加载当前 BOM 子物料
 watch(
   () => replaceBomForm.orderItemId,
   async (val) => {
@@ -2392,7 +2389,6 @@ const handleReplaceBom = async () => {
       },
     );
 
-    // 处理预留不足警告
     if (result?.warnings && result.warnings.length > 0) {
       toast.error(
         `BOM 更换成功，但请注意以下物料预留不足：${result.warnings.join("；")}`,
@@ -2407,17 +2403,17 @@ const handleReplaceBom = async () => {
     toast.error(e, "BOM 更换失败");
   }
 };
-//========================打印报工单================================================
+
+// ==================== 打印报工单 ====================
 const showPrintModal = ref(false);
 const printOrderItemId = ref("");
 const printBlankRows = ref(20);
+
 const openPrintModal = () => {
   if (!order.value?.items || order.value.items.length === 0) {
     toast.error("订单无明细");
     return;
   }
-
-  // 默认选中第一个产品
   printOrderItemId.value = order.value.items[0].id;
   printBlankRows.value = 20;
   showPrintModal.value = true;
@@ -2442,6 +2438,7 @@ const confirmPrint = async () => {
     toast.error(e?.data?.message || "打印失败");
   }
 };
+
 // ==================== 工具函数 ====================
 const getProductUnit = (productId: string) => {
   const p = allProducts.value.find((p: any) => p.id === productId);

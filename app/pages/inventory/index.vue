@@ -333,7 +333,10 @@
               <span class="font-medium">{{ actionContext.productName }}</span>
             </span>
             <button
-              v-if="actionMode === 'general'"
+              v-if="
+                actionMode === 'general' &&
+                !(actionContext.type === 'SALES_OUT' && actionContext.orderId)
+              "
               @click="showProductPicker = true"
               class="text-xs text-blue-500"
             >
@@ -349,6 +352,7 @@
           }}</label>
           <select
             v-model="actionContext.type"
+            @change="onTypeChange"
             :disabled="actionMode === 'row'"
             class="w-full min-h-[48px] border border-slate-300 rounded-lg px-4 py-2 text-base bg-white focus:ring-2 focus:ring-blue-500 outline-none transition disabled:bg-slate-100 disabled:text-slate-500"
           >
@@ -358,7 +362,7 @@
               <option value="CHECK_IN">盘盈入库</option>
             </template>
             <template v-else>
-              <option value="SALES_OUT">销售出库</option>
+              <option value="SALES_OUT">销售出库 / 发货</option>
               <option value="SAMPLE_OUT">打样领料</option>
               <option value="SCRAP_OUT">报废出库</option>
               <option value="CHECK_OUT">盘亏出库</option>
@@ -385,6 +389,83 @@
           />
         </div>
 
+        <!-- 销售出库：关联订单 -->
+        <div
+          v-if="actionDirection === 'out' && actionContext.type === 'SALES_OUT'"
+          class="mb-4"
+        >
+          <label class="block text-sm font-medium text-slate-700 mb-1">
+            关联订单
+            <span class="text-slate-400 text-xs"
+              >（选订单后自动走发货流程）</span
+            >
+          </label>
+
+          <button
+            v-if="!actionContext.orderId"
+            @click="openOrderPicker"
+            type="button"
+            class="w-full min-h-[48px] border border-slate-300 rounded-lg px-4 py-2 text-base text-left text-slate-400 hover:border-blue-400 transition"
+          >
+            点击选择订单（可选）
+          </button>
+
+          <div
+            v-else
+            class="w-full min-h-[48px] border border-slate-200 rounded-lg px-4 py-2 bg-slate-50 flex items-center justify-between"
+          >
+            <span class="truncate">
+              <span class="font-mono text-xs text-slate-400 mr-2">{{
+                actionContext.orderCode
+              }}</span>
+            </span>
+            <div class="flex gap-2 shrink-0 ml-2">
+              <button @click="openOrderPicker" class="text-xs text-blue-500">
+                更换
+              </button>
+              <button @click="clearOrderLink" class="text-xs text-red-400">
+                取消
+              </button>
+            </div>
+          </div>
+
+          <!-- 订单多明细：待发明细下拉 -->
+          <div
+            v-if="actionContext.orderId && linkedOrderItems.length > 1"
+            class="mt-2"
+          >
+            <label class="block text-xs text-slate-500 mb-1"
+              >选择发货明细</label
+            >
+            <select
+              v-model="actionContext.orderItemId"
+              @change="onLinkedOrderItemChange"
+              class="w-full min-h-[48px] border border-slate-300 rounded-lg px-4 py-2 text-base bg-white"
+            >
+              <option
+                v-for="it in linkedOrderItems"
+                :key="it.id"
+                :value="it.id"
+              >
+                {{ it.productName }}（待发
+                {{ Number(it.quantity) - Number(it.shippedQuantity || 0) }}）
+              </option>
+            </select>
+          </div>
+        </div>
+
+        <!-- 打样领料：保留文本框 -->
+        <div v-if="actionContext.type === 'SAMPLE_OUT'" class="mb-4">
+          <label class="block text-sm font-medium text-slate-700 mb-1"
+            >关联单号 <span class="text-slate-400 text-xs">(可选)</span></label
+          >
+          <input
+            v-model="actionContext.relatedCode"
+            placeholder="领料单号"
+            class="w-full border border-slate-300 rounded-lg px-4 py-3 text-base min-h-[48px]"
+          />
+        </div>
+
         <!-- 数量 -->
         <div class="mb-4">
           <label class="block text-sm font-medium text-slate-700 mb-1"
@@ -403,21 +484,6 @@
               >{{ actionContext.unit }}</span
             >
           </div>
-        </div>
-
-        <!-- 关联单号（仅销售出库/打样领料需要，可选） -->
-        <div
-          v-if="['SALES_OUT', 'SAMPLE_OUT'].includes(actionContext.type)"
-          class="mb-4"
-        >
-          <label class="block text-sm font-medium text-slate-700 mb-1"
-            >关联单号 <span class="text-slate-400 text-xs">(可选)</span></label
-          >
-          <input
-            v-model="actionContext.relatedCode"
-            placeholder="订单号/领料单号"
-            class="w-full border border-slate-300 rounded-lg px-4 py-3 text-base min-h-[48px]"
-          />
         </div>
 
         <!-- 库位 -->
@@ -516,6 +582,80 @@
         </button>
       </div>
     </div>
+
+    <!-- 订单选择弹窗 -->
+    <div
+      v-if="showOrderPicker"
+      class="fixed inset-0 z-[60] flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showOrderPicker = false"
+      />
+      <div
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-lg max-h-[80vh] flex flex-col"
+      >
+        <h2 class="text-lg font-bold mb-4">选择订单</h2>
+        <div class="flex gap-2 mb-4">
+          <input
+            v-model="orderSearch"
+            @keydown.enter="searchOrders"
+            placeholder="输入订单号搜索..."
+            class="flex-1 border border-slate-300 rounded-lg px-4 py-3 text-base min-h-[48px]"
+          />
+          <button
+            @click="searchOrders"
+            class="min-h-[48px] px-4 bg-blue-500 text-white rounded-lg text-sm"
+          >
+            搜索
+          </button>
+        </div>
+        <div class="flex-1 overflow-y-auto space-y-1">
+          <p v-if="orderSearching" class="text-center text-slate-400 py-8">
+            搜索中...
+          </p>
+          <button
+            v-for="o in orderCandidates"
+            :key="o.id"
+            @click="selectOrder(o)"
+            class="w-full text-left px-4 py-3 rounded-lg text-sm hover:bg-blue-50 transition border border-transparent"
+          >
+            <div class="flex items-center justify-between">
+              <div class="min-w-0">
+                <span class="font-mono text-xs text-slate-500">{{
+                  o.orderCode
+                }}</span>
+                <span class="ml-2 text-slate-600 truncate">{{
+                  o.customer?.name || "-"
+                }}</span>
+              </div>
+              <span class="text-xs text-slate-400 shrink-0 ml-2">
+                {{
+                  (o.items || []).filter(
+                    (it: any) =>
+                      Number(it.shippedQuantity || 0) < Number(it.quantity),
+                  ).length
+                }}
+                项待发
+              </span>
+            </div>
+          </button>
+          <p
+            v-if="!orderSearching && orderCandidates.length === 0"
+            class="text-center text-slate-400 py-8"
+          >
+            无匹配订单
+          </p>
+        </div>
+        <button
+          @click="showOrderPicker = false"
+          class="mt-4 w-full min-h-[48px] border py-2 rounded-lg hover:bg-slate-50 text-sm"
+        >
+          关闭
+        </button>
+      </div>
+    </div>
+
     <!-- 调拨弹窗 -->
     <div
       v-if="showTransferModal"
@@ -617,7 +757,7 @@
 
 <script setup lang="ts">
 definePageMeta({ middleware: ["auth" as any] });
-
+const route = useRoute();
 const toast = useToast();
 const { apiFetch } = useApi();
 
@@ -681,8 +821,8 @@ const activeLocations = computed(
 const defaultLocation = computed(() =>
   activeLocations.value.find((l: any) => l.isDefault),
 );
-//桌面端操作列表
 
+// ==================== 桌面端操作菜单 ====================
 const desktopMenuId = ref<string | null>(null);
 const desktopMenuStyle = ref<Record<string, string>>({});
 
@@ -716,11 +856,26 @@ const selectDesktopAction = (type: string) => {
 onMounted(() => {
   document.addEventListener("click", (e) => {
     const target = e.target as HTMLElement;
-    // 如果点击的是菜单内部，不关闭
     if (target.closest("[data-desktop-menu]")) return;
     desktopMenuId.value = null;
   });
 });
+
+// ==================== query 自动打开弹窗 ====================
+onMounted(() => {
+  const action = route.query.action as string;
+  const type = route.query.type as string;
+  if (action === "in") {
+    openActionModal("general", "in", type ? { type } : undefined);
+  } else if (action === "out") {
+    openActionModal("general", "out", type ? { type } : undefined);
+    // 仓管"发货"卡片携带 pickOrder=1，自动打开订单选择
+    if (route.query.pickOrder === "1") {
+      openOrderPicker();
+    }
+  }
+});
+
 // ==================== 统一操作弹窗 ====================
 const showActionModal = ref(false);
 const actionMode = ref<"row" | "general">("general");
@@ -736,6 +891,8 @@ const actionContext = ref({
   locationId: "",
   relatedCode: "",
   orderId: "",
+  orderItemId: "",
+  orderCode: "",
   remark: "",
   unitCost: 0,
 });
@@ -745,7 +902,7 @@ const actionTitle = computed(() => {
     PURCHASE_IN: "采购入库",
     RETURN_IN: "退货入库",
     CHECK_IN: "盘盈入库",
-    SALES_OUT: "销售出库",
+    SALES_OUT: "销售出库 / 发货",
     SAMPLE_OUT: "打样领料",
     SCRAP_OUT: "报废出库",
     CHECK_OUT: "盘亏出库",
@@ -778,10 +935,21 @@ const openActionModal = (
     locationId: defaultLocation.value?.id || "",
     relatedCode: "",
     orderId: "",
+    orderItemId: "",
+    orderCode: "",
     remark: "",
     unitCost: 0,
   };
+  linkedOrder.value = null;
+  linkedOrderItems.value = [];
   showActionModal.value = true;
+};
+
+// 切换类型时清理关联订单（仅销售出库关联）
+const onTypeChange = () => {
+  if (actionContext.value.type !== "SALES_OUT") {
+    clearOrderLink();
+  }
 };
 
 const handleSubmit = async () => {
@@ -793,6 +961,23 @@ const handleSubmit = async () => {
 
   try {
     const isOut = actionDirection.value === "out";
+
+    // ✅ 销售出库 + 关联了订单 → 走发货接口，订单进度同步更新
+    if (isOut && ctx.type === "SALES_OUT" && ctx.orderId && ctx.orderItemId) {
+      await apiFetch(`/api/orders/${ctx.orderId}/ship`, {
+        method: "POST",
+        body: {
+          items: [{ orderItemId: ctx.orderItemId, quantity: ctx.quantity }],
+          locationId: ctx.locationId || undefined,
+        },
+      });
+      toast.success("发货成功");
+      showActionModal.value = false;
+      await load(queryParams.value);
+      return;
+    }
+
+    // 通用出入库
     const body: any = {
       quantity: ctx.quantity,
       type: ctx.type,
@@ -800,10 +985,7 @@ const handleSubmit = async () => {
       relatedCode: ctx.relatedCode || undefined,
       locationId: ctx.locationId || undefined,
     };
-
-    if (ctx.type === "PURCHASE_IN") {
-      body.unitCost = ctx.unitCost;
-    }
+    if (ctx.type === "PURCHASE_IN") body.unitCost = ctx.unitCost;
 
     const url = `/api/inventory/${ctx.productId}/${isOut ? "outbound" : "inbound"}`;
     await apiFetch(url, { method: "POST", body });
@@ -815,6 +997,87 @@ const handleSubmit = async () => {
   }
 };
 
+// ==================== 出库关联订单 ====================
+const showOrderPicker = ref(false);
+const orderSearch = ref("");
+const orderCandidates = ref<any[]>([]);
+const orderSearching = ref(false);
+const linkedOrderItems = ref<any[]>([]);
+const linkedOrder = ref<any>(null);
+
+const openOrderPicker = () => {
+  orderSearch.value = "";
+  orderCandidates.value = [];
+  showOrderPicker.value = true;
+  searchOrders();
+};
+
+const searchOrders = async () => {
+  orderSearching.value = true;
+  try {
+    const res = await apiFetch<any>(
+      `/api/orders?keyword=${encodeURIComponent(orderSearch.value)}&limit=10`,
+    );
+    const all = res.data || [];
+    // 只保留可发货状态的订单
+    orderCandidates.value = all.filter((o: any) =>
+      ["APPROVED", "PRODUCING", "READY"].includes(o.status),
+    );
+  } catch {
+    orderCandidates.value = [];
+  } finally {
+    orderSearching.value = false;
+  }
+};
+
+const selectOrder = (order: any) => {
+  linkedOrder.value = order;
+  linkedOrderItems.value = (order.items || []).filter(
+    (it: any) => Number(it.shippedQuantity || 0) < Number(it.quantity),
+  );
+
+  if (linkedOrderItems.value.length === 0) {
+    toast.error("该订单已全部发货");
+    return;
+  }
+
+  actionContext.value.orderId = order.id;
+  actionContext.value.orderCode = order.orderCode;
+
+  const first = linkedOrderItems.value[0];
+  actionContext.value.orderItemId = first.id;
+  onLinkedOrderItemChange();
+
+  showOrderPicker.value = false;
+};
+
+const onLinkedOrderItemChange = () => {
+  if (!actionContext.value.orderItemId) return;
+  const item = linkedOrderItems.value.find(
+    (it: any) => it.id === actionContext.value.orderItemId,
+  );
+  if (!item) return;
+
+  const remaining = Number(item.quantity) - Number(item.shippedQuantity || 0);
+  const p = allProducts.value.find((x: any) => x.id === item.productId);
+
+  actionContext.value.productId = item.productId;
+  actionContext.value.productName = item.productName;
+  actionContext.value.productCode = p?.code || "";
+  actionContext.value.unit = p?.unit || "";
+  actionContext.value.quantity = remaining;
+  actionContext.value.relatedCode = linkedOrder.value?.orderCode || "";
+};
+
+const clearOrderLink = () => {
+  actionContext.value.orderId = "";
+  actionContext.value.orderItemId = "";
+  actionContext.value.orderCode = "";
+  actionContext.value.relatedCode = "";
+  linkedOrder.value = null;
+  linkedOrderItems.value = [];
+};
+
 // ==================== 移动端操作面板 ====================
 const showActionSheet = ref(false);
 const actionSheetInv = ref<any>(null);
@@ -823,7 +1086,7 @@ const allActions = [
   { type: "PURCHASE_IN", label: "采购入库" },
   { type: "RETURN_IN", label: "退货入库" },
   { type: "CHECK_IN", label: "盘盈入库" },
-  { type: "SALES_OUT", label: "销售出库" },
+  { type: "SALES_OUT", label: "销售出库 / 发货" },
   { type: "SAMPLE_OUT", label: "打样领料" },
   { type: "SCRAP_OUT", label: "报废出库" },
   { type: "CHECK_OUT", label: "盘亏出库" },

@@ -108,9 +108,13 @@
               >
             </td>
             <td class="px-4 py-3 text-sm text-right">
-              <template v-if="Number(order.totalAmount) > 0"
-                >¥{{ order.totalAmount }}</template
-              ><span v-else class="text-slate-400">待定价</span>
+              <template v-if="order.totalAmount === '***'">
+                <span class="text-slate-400">***</span>
+              </template>
+              <template v-else-if="Number(order.totalAmount) > 0">
+                ¥{{ order.totalAmount }}
+              </template>
+              <span v-else class="text-slate-400">待定价</span>
             </td>
             <td class="px-4 py-3 text-sm">
               {{ order.creator?.badgeCode }}-{{ order.creator?.name }}
@@ -164,9 +168,13 @@
           <span class="text-slate-500">{{ order.customer?.name || "-" }}</span>
         </div>
         <div class="flex justify-between items-center text-sm">
-          <span class="font-medium">{{
-            Number(order.totalAmount) > 0 ? `¥${order.totalAmount}` : "待定价"
-          }}</span>
+          <template v-if="order.totalAmount === '***'">
+            <span class="text-slate-400">***</span>
+          </template>
+          <template v-else-if="Number(order.totalAmount) > 0">
+            ¥{{ order.totalAmount }}
+          </template>
+          <span v-else class="text-slate-400">待定价</span>
           <NuxtLink
             :to="`/orders/${order.id}`"
             class="text-blue-600 font-medium"
@@ -204,11 +212,12 @@
 
 <script setup lang="ts">
 definePageMeta({ middleware: ["auth" as any] });
+const route = useRoute();
 const toast = useToast();
 const page = ref(1);
 const limit = 10;
 const keyword = ref("");
-const statusFilter = ref("");
+const statusFilter = ref((route.query.status as string) || "");
 const sortField = ref("createdAt");
 const sortDir = ref<"asc" | "desc">("desc");
 const handlePrintError = (msg: string) => {

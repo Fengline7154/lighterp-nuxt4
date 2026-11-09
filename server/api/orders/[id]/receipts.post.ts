@@ -5,7 +5,7 @@ import { requirePermission } from "~~/server/utils/requirePermission";
 import { buildRequestContext } from "~~/server/utils/buildRequestContext";
 
 export default defineEventHandler(async (event) => {
-  await requirePermission(event, "order:edit");
+  await requirePermission(event, ["order:edit", "inventory:adjust"]);
 
   const ctx = buildRequestContext(event);
   const orderId = getRouterParam(event, "id")!;

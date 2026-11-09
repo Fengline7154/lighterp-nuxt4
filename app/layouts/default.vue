@@ -294,9 +294,24 @@ onMounted(() => {
       expandedGroups.value.add(group.label);
     }
   }
-  // 如果没有任何展开，默认展开第一个有子项的组
-  if (expandedGroups.value.size === 0 && filteredMenuGroups.value.length > 0) {
-    expandedGroups.value.add(filteredMenuGroups.value[0]!.label);
+  // 未匹配时，按角色展开高频组
+  if (expandedGroups.value.size === 0) {
+    const role = authStore.user?.role;
+    const preferred: Record<string, string> = {
+      warehouseKeeper: "库存与产品",
+      staff: "订单与生产",
+      seniorStaff: "订单与生产",
+      accountant: "人员与客户",
+      admin: "订单与生产",
+    };
+    const preferredLabel = role ? preferred[role] : undefined;
+    const target = filteredMenuGroups.value.find(
+      (g) => g.label === preferredLabel,
+    );
+    if (target) expandedGroups.value.add(target.label);
+    else if (filteredMenuGroups.value.length > 0) {
+      expandedGroups.value.add(filteredMenuGroups.value[0]!.label);
+    }
   }
 });
 

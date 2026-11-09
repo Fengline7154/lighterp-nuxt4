@@ -268,13 +268,13 @@ import { valueLabels } from "~~/shared/utils/labels";
 Chart.register(...registerables);
 
 definePageMeta({ middleware: ["auth" as any] });
-
+const route = useRoute();
 const tabs = [
   { key: "production", label: "产量报表" },
   { key: "order", label: "订单报表" },
   { key: "inventory", label: "库存报表" },
 ];
-const activeTab = ref("production");
+const activeTab = ref((route.query.tab as string) || "production");
 
 const now = new Date();
 const startDate = ref(

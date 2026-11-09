@@ -123,7 +123,9 @@
                     itemAt(i).materialId !== "__NEW__"
                       ? itemAt(i).existingProduct?.code ||
                         itemAt(i).materialId?.substring(0, 8) + "..."
-                      : "选择物料"
+                      : itemAt(i).materialName
+                        ? "新建 · " + itemAt(i).materialName
+                        : "选择物料"
                   }}
                 </button>
               </td>
@@ -161,6 +163,7 @@
                   <option value="RAW">原材料</option>
                   <option value="SEMI">半成品</option>
                   <option value="PACKAGING">包材</option>
+                  <option value="FINISHED">成品</option>
                 </select>
                 <span v-else class="text-xs text-slate-400">已有</span>
               </td>
@@ -219,7 +222,9 @@
                   itemAt(i).materialId !== "__NEW__"
                     ? itemAt(i).existingProduct?.code ||
                       itemAt(i).materialId?.substring(0, 8) + "..."
-                    : "选择物料"
+                    : itemAt(i).materialName
+                      ? "新建 · " + itemAt(i).materialName
+                      : "选择物料"
                 }}
               </button>
               <button
@@ -281,6 +286,7 @@
                   <option value="RAW">原材料</option>
                   <option value="SEMI">半成品</option>
                   <option value="PACKAGING">包材</option>
+                  <option value="FINISHED">成品</option>
                 </select>
               </div>
             </div>
@@ -385,8 +391,8 @@
             class="flex-1 border border-slate-300 rounded-lg px-4 py-3 text-sm min-h-[44px] focus:ring-2 focus:ring-blue-500 outline-none"
           />
           <button
-            @click="clearMaterialSelection(showMaterialPicker)"
-            class="min-h-[44px] px-3 text-sm text-slate-500 border rounded-lg hover:bg-slate-50"
+            @click="openNewMaterialForm"
+            class="min-h-[44px] px-3 text-sm text-white border border-blue-500 rounded-lg whitespace-nowrap bg-gradient-to-r from-blue-500 via-blue-500 to-blue-600 bg-[length:200%_100%] bg-left transition-all duration-300 ease-out hover:bg-right hover:from-blue-600 hover:via-blue-600 hover:to-blue-700 hover:shadow-md hover:shadow-blue-500/30 hover:-translate-y-0.5 active:translate-y-0 active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-1"
           >
             新建物料
           </button>
@@ -403,6 +409,11 @@
             }}</span>
             <span class="font-medium">{{ p.name }}</span>
             <span class="text-xs text-slate-400 ml-1">{{ p.spec || "" }}</span>
+            <span
+              class="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500"
+            >
+              {{ categoryLabel(p.category) }}
+            </span>
           </button>
           <p
             v-if="filteredMaterials.length === 0"
@@ -417,6 +428,94 @@
         >
           关闭
         </button>
+      </div>
+    </div>
+
+    <!-- 新建物料弹窗 -->
+    <div
+      v-if="showNewMaterialForm"
+      class="fixed inset-0 z-[60] flex items-center justify-center p-4"
+    >
+      <div
+        class="absolute inset-0 bg-black/30"
+        @click="showNewMaterialForm = false"
+      />
+      <div
+        class="relative bg-white rounded-xl shadow-xl p-6 w-full max-w-md max-h-[85vh] overflow-auto"
+      >
+        <h2 class="text-lg font-bold mb-4">新建物料</h2>
+
+        <div class="space-y-3">
+          <!-- 名称 -->
+          <div>
+            <label class="block text-xs font-medium text-slate-600 mb-1">
+              物料名称 <span class="text-red-500">*</span>
+            </label>
+            <input
+              v-model="newMaterialForm.name"
+              placeholder="例如：M6 不锈钢螺丝"
+              class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[40px] focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition bg-white"
+            />
+          </div>
+
+          <!-- 规格 + 单位 -->
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs font-medium text-slate-600 mb-1"
+                >规格</label
+              >
+              <input
+                v-model="newMaterialForm.spec"
+                placeholder="例如：10×50mm"
+                class="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm min-h-[40px] focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition bg-white"
+              />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-600 mb-1"
+                >单位</label
+              >
+              <select
+                v-model="newMaterialForm.unit"
+                class="w-full min-h-[40px] border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+              >
+                <option v-for="u in units" :key="u" :value="u">
+                  {{ u }}
+                </option>
+              </select>
+            </div>
+          </div>
+
+          <!-- 分类 -->
+          <div>
+            <label class="block text-xs font-medium text-slate-600 mb-1"
+              >分类</label
+            >
+            <select
+              v-model="newMaterialForm.category"
+              class="w-full min-h-[40px] border border-slate-300 rounded-lg px-3 py-2 text-sm bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+            >
+              <option value="RAW">原材料</option>
+              <option value="SEMI">半成品</option>
+              <option value="PACKAGING">包材</option>
+              <option value="FINISHED">成品</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="flex gap-2 mt-5">
+          <button
+            @click="confirmCreateMaterial"
+            class="flex-1 min-h-[44px] bg-blue-500 text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition"
+          >
+            确认创建
+          </button>
+          <button
+            @click="showNewMaterialForm = false"
+            class="min-h-[44px] px-4 border border-slate-300 text-slate-600 rounded-lg text-sm hover:bg-slate-100 transition"
+          >
+            取消
+          </button>
+        </div>
       </div>
     </div>
 
@@ -546,6 +645,16 @@ const selectedProductLabel = computed(() => {
   return p ? `${p.code} ${p.name}` : "";
 });
 
+// ===== 分类中文映射 =====
+const categoryLabelMap: Record<string, string> = {
+  RAW: "原料",
+  SEMI: "半成品",
+  PACKAGING: "包材",
+  FINISHED: "成品",
+};
+const categoryLabel = (c?: string | null): string =>
+  c ? (categoryLabelMap[c] ?? c) : "-";
+
 const filteredProducts = computed(() => {
   if (!productSearch.value.trim())
     return allProducts.value.filter(
@@ -625,15 +734,51 @@ const selectMaterial = (i: number, p: any) => {
   showMaterialPicker.value = null;
 };
 
-const clearMaterialSelection = (i: number) => {
-  const item = itemAt(i);
+// ==================== 新建物料弹窗 ====================
+const showNewMaterialForm = ref(false);
+const currentMaterialRowIndex = ref<number | null>(null);
+const newMaterialForm = reactive({
+  name: "",
+  spec: "",
+  unit: "PCS",
+  category: "RAW",
+});
+
+const resetNewMaterialForm = () => {
+  newMaterialForm.name = "";
+  newMaterialForm.spec = "";
+  newMaterialForm.unit = "PCS";
+  newMaterialForm.category = "RAW";
+};
+
+// 从物料选择弹窗进入"新建物料"独立弹窗
+const openNewMaterialForm = () => {
+  if (showMaterialPicker.value === null) return;
+  currentMaterialRowIndex.value = showMaterialPicker.value;
+  resetNewMaterialForm();
+  showMaterialPicker.value = null; // 关闭物料选择弹窗
+  showNewMaterialForm.value = true;
+};
+
+const confirmCreateMaterial = () => {
+  if (!newMaterialForm.name.trim()) {
+    toast.error("请输入物料名称");
+    return;
+  }
+  if (currentMaterialRowIndex.value === null) return;
+
+  const item = itemAt(currentMaterialRowIndex.value);
   item.materialId = "__NEW__";
-  item.materialName = "";
-  item.spec = "";
-  item.unit = "PCS";
+  item.materialName = newMaterialForm.name.trim();
+  item.spec = newMaterialForm.spec;
+  item.unit = newMaterialForm.unit;
+  item.category = newMaterialForm.category;
   item.isNew = true;
   item.existingProduct = null;
-  showMaterialPicker.value = null;
+
+  showNewMaterialForm.value = false;
+  currentMaterialRowIndex.value = null;
+  toast.success(`物料"${item.materialName}"将在提交 BOM 时自动创建`);
 };
 
 const selectOrder = (code: string) => {

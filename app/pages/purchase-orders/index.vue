@@ -190,12 +190,12 @@
 </template>
 
 <script setup lang="ts">
+const route = useRoute();
 definePageMeta({ middleware: ["auth" as any] });
-
 const page = ref(1);
 const limit = 10;
 const keyword = ref("");
-const statusFilter = ref("");
+const statusFilter = ref((route.query.status as string) || "");
 const searchKeyword = ref("");
 const startDate = ref("");
 const endDate = ref("");

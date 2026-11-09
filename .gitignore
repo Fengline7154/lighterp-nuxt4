@@ -42,7 +42,7 @@ log/
 .DS_Store
 Thumbs.db
 desktop.ini
-
+.ai/
 # ============ IDE 和编辑器 ============
 # VS Code
 .vscode/
@@ -125,3 +125,4 @@ vitest.config.ts
 vitest.setup.ts
 .repomixignore
 scripts/
+reset-all.ps1

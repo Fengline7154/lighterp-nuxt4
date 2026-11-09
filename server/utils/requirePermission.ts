@@ -5,7 +5,7 @@ import { usePrisma } from "~~/server/config/prisma";
 
 // context 类型声明保留你原有的完整定义...
 
-export async function requirePermission(event: H3Event, requiredPerm?: string) {
+export async function requirePermission(event: H3Event, requiredPerm?: any) {
   // 1. 中间件已注入，说明已登录
   if (event.context.auth?.user?.id) {
     const userId = event.context.auth.user.id;

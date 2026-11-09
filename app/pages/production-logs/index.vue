@@ -977,6 +977,7 @@
 
 <script setup lang="ts">
 definePageMeta({ middleware: ["auth" as any] });
+const route = useRoute();
 const toast = useToast();
 const { apiFetch } = useApi();
 
@@ -1397,4 +1398,9 @@ const statusBadge = (s: string) => {
   return m[s] || "bg-slate-100 text-slate-600 border-slate-300";
 };
 const formatDate = (d: string) => new Date(d).toLocaleDateString("zh-CN");
+onMounted(() => {
+  if (route.query.action === "quick-report") {
+    showQuickReport.value = true;
+  }
+});
 </script>
