@@ -128,3 +128,5 @@ scripts/
 reset-all.ps1
 reset-all.sh
 *.xml
+*.sh
+*.ps
