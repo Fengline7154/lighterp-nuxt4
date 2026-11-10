@@ -127,3 +127,4 @@ vitest.setup.ts
 scripts/
 reset-all.ps1
 reset-all.sh
+*.xml

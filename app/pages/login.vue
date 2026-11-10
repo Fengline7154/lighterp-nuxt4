@@ -64,8 +64,19 @@ definePageMeta({ layout: "blank" });
 const checking = ref(true);
 
 onMounted(async () => {
-  const authed = await restoreAuth();
+  // ① 先检查系统是否已初始化（覆盖所有到达 login 的路径）
+  try {
+    const status = await $fetch<any>("/api/setup/status");
+    if (status?.needSetup) {
+      await navigateTo("/setup");
+      return;
+    }
+  } catch {
+    // setup 接口失败不阻塞登录，避免 Redis/DB 抖动时卡死用户
+  }
 
+  // ② 原有认证检查
+  const authed = await restoreAuth();
   if (authed) {
     await navigateTo("/dashboard");
     return;
